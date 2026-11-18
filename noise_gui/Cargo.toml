@@ -1,0 +1,19 @@
+[package]
+name = "noise_gui"
+version.workspace = true
+edition.workspace = true
+description = "Desktop GUI for counting duplicate DNA sequences and searching reads for a sequence"
+
+[dependencies]
+noise_core = { workspace = true }
+egui = "0.37.0"
+# `glow` is not enabled by default; compiling it as well gives a working
+# --renderer glow fallback if the wgpu/Vulkan path misbehaves on this GPU.
+eframe = { version = "0.37.0", features = ["glow"] }
+egui_extras = "0.37.0"
+egui_plot = "0.38.0"
+rfd = "0.18.0"
+rayon = "1.12.0"
+
+[dev-dependencies]
+sha2 = "0.11.1"
