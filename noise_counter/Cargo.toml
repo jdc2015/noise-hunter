@@ -1,0 +1,13 @@
+[package]
+name = "noise_counter"
+version = "0.4.0"
+edition = "2021"
+description = "Count duplicate DNA sequences in plain-text *_unbinned_reads files"
+
+[dependencies]
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
