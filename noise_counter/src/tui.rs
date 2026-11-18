@@ -19,7 +19,7 @@ use noise_core::count::{
 use noise_core::scan::{list_directory_for_browse, results_dir, DirectoryListing};
 
 const APP_NAME: &str = "Noise Counter";
-const APP_VERSION: &str = "v0.4.0";
+const APP_VERSION: &str = "v0.5.0";
 
 const PROGRAM_FUNCTIONS: &[&str] = &[
     "• Counts duplicate DNA sequences in plain-text *_unbinned_reads files",
