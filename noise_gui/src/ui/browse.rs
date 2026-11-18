@@ -57,8 +57,16 @@ pub fn browse_tab(ui: &mut Ui, state: &mut AppState, actions: &mut Actions) {
         .small()
         .color(MUTED),
     );
+    // The list must not claim the whole panel: the Run row below it is the only
+    // way to start a count, and a vertical scroll area that fills the available
+    // height lays that row out past the bottom edge, where it is clipped away.
+    // Cap the list instead, and let it shrink when there is little to show, so
+    // the row is where it always was — just under the last file.
+    const RUN_ROW_HEIGHT: f32 = 56.0;
+    let list_height = (ui.available_height() - RUN_ROW_HEIGHT).max(120.0);
     egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
+        .auto_shrink([false, true])
+        .max_height(list_height)
         .show(ui, |ui| {
             for &index in &shown {
                 let path = &files[index];
