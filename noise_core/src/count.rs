@@ -226,7 +226,13 @@ pub fn top_sequences(counts: &HashMap<String, u64>, k: usize) -> Vec<ExamineEntr
 /// Counts the first (examine) file at full length and returns the top-10
 /// sequences plus summary stats, for the "choose a filter" screen.
 pub fn examine_file(path: &Path) -> Result<ExamineResult, String> {
-    let tally = tally_file(path, None)?;
+    examine_file_with(path, None)
+}
+
+/// As [`examine_file`], but tallied through an optional length filter, so a
+/// front end can show the top-10 for the filter the user is typing.
+pub fn examine_file_with(path: &Path, filter: Option<usize>) -> Result<ExamineResult, String> {
+    let tally = tally_file(path, filter)?;
     Ok(ExamineResult {
         top: top_sequences(&tally.counts, TOP_N),
         sample_name: sample_name_from_path(path),
@@ -308,22 +314,98 @@ pub struct ClosestMatch {
     pub read: String,
 }
 
-/// One sample's hit count for a specific-sequence query.
+/// One sample's result for a specific-sequence query.
+///
+/// `count` is always the exact-containment count, whatever the options were,
+/// so numbers never move between a default run and an extended one. The extra
+/// fields stay empty for the default options.
 #[derive(Clone)]
 pub struct SampleHit {
     pub sample_name: String,
     pub count: u64,
     /// Populated only when `count == 0`: the closest non-matching read window.
     pub closest: Option<ClosestMatch>,
+    /// Reads containing the reverse complement — only with
+    /// `SearchOptions::reverse_complement`.
+    pub reverse: u64,
+    /// Reads containing the sequence or its reverse complement, counted once.
+    pub combined: u64,
+    /// Reads within `SearchOptions::max_mismatches` — only when that is > 0.
+    pub within_tolerance: u64,
+    /// Fewest mismatched bases seen in this sample — only when
+    /// `SearchOptions::max_mismatches` is > 0. `None` when every read was
+    /// shorter than the query.
+    pub best_distance: Option<usize>,
 }
 
 /// Result of counting one specific sequence across one or more sample files.
 #[derive(Clone)]
 pub struct SequenceQueryResult {
     pub sequence: String,
+    pub options: SearchOptions,
     pub hits: Vec<SampleHit>,
     pub total: u64,
+    pub reverse_total: u64,
+    pub combined_total: u64,
+    pub within_tolerance_total: u64,
     pub output_path: PathBuf,
+}
+
+/// How a specific-sequence search behaves. `Default` is exact containment of
+/// the sequence as typed — what the TUI has always done — so leaving options
+/// alone reproduces v0.4.0 output byte for byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// Also search the reverse complement.
+    pub reverse_complement: bool,
+    /// Count reads whose nearest window differs by at most this many bases.
+    /// `0` means exact containment only.
+    pub max_mismatches: usize,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            reverse_complement: false,
+            max_mismatches: 0,
+        }
+    }
+}
+
+impl SearchOptions {
+    /// True when nothing beyond exact containment is asked for, which is the
+    /// case that keeps the cheap fast path (no per-read window scan).
+    pub fn is_exact(&self) -> bool {
+        self.max_mismatches == 0 && !self.reverse_complement
+    }
+}
+
+/// The complementary strand read 3'→5': A↔T, C↔G. Input is expected to be
+/// A/C/G/T already (`clean_sequence` and `parse_target_sequence` enforce that).
+pub fn reverse_complement(sequence: &str) -> String {
+    sequence
+        .chars()
+        .rev()
+        .map(|base| match base {
+            'A' => 'T',
+            'C' => 'G',
+            'G' => 'C',
+            'T' => 'A',
+            other => other,
+        })
+        .collect()
+}
+
+/// What one file scan found. Each counter counts a *read* at most once, even
+/// if the sequence occurs in it more than once.
+#[derive(Clone, Debug, Default)]
+pub struct FileScan {
+    pub exact: u64,
+    pub reverse: u64,
+    pub combined: u64,
+    pub within_tolerance: u64,
+    pub best_distance: Option<usize>,
+    pub closest: Option<ClosestMatch>,
 }
 
 /// Normalizes a user-entered target sequence: trims whitespace, uppercases,
@@ -344,21 +426,41 @@ pub fn parse_target_sequence(input: &str) -> Result<String, String> {
     Ok(sequence)
 }
 
-/// Counts reads containing `sequence` and, when no read matches at all, also
-/// finds the closest equal-length window (minimum Hamming distance). The
-/// diagnostic is skipped entirely as soon as the first hit is seen, so samples
-/// with hits pay no extra cost.
+/// v0.4.0-compatible entry point: the exact-containment count plus the
+/// zero-hit diagnostic. Equivalent to `scan_sequence_in_file_with` with
+/// default options.
 pub fn scan_sequence_in_file(
     path: &Path,
     sequence: &str,
 ) -> Result<(u64, Option<ClosestMatch>), String> {
+    let scan = scan_sequence_in_file_with(path, sequence, &SearchOptions::default())?;
+    Ok((scan.exact, scan.closest))
+}
+
+/// Counts reads under `options`, and when no read matches exactly also finds
+/// the closest read window (minimum Hamming distance).
+///
+/// With default options the window scan is skipped as soon as the first hit is
+/// seen, so samples with hits pay no extra cost — the cheap path the TUI takes.
+/// Reverse-complement or mismatch tolerance has to examine every read, so that
+/// path scans all of them; `within_tolerance` and `best_distance` are only
+/// meaningful there.
+pub fn scan_sequence_in_file_with(
+    path: &Path,
+    sequence: &str,
+    options: &SearchOptions,
+) -> Result<FileScan, String> {
     let file = File::open(path).map_err(|e| format!("Could not open '{}': {e}", path.display()))?;
     let reader = BufReader::with_capacity(1024 * 1024, file);
 
     let query = sequence.as_bytes();
     let query_len = query.len();
-    let mut hits = 0u64;
-    let mut closest: Option<ClosestMatch> = None;
+    let reverse_query = reverse_complement(sequence);
+    let reverse_query = options
+        .reverse_complement
+        .then_some(reverse_query.as_bytes());
+
+    let mut scan = FileScan::default();
 
     for line in reader.lines() {
         let line = line.map_err(|e| format!("Could not read '{}': {e}", path.display()))?;
@@ -366,27 +468,83 @@ pub fn scan_sequence_in_file(
             continue;
         };
 
-        if cleaned.contains(sequence) {
-            hits += 1;
-            // A hit means this sample needs no diagnostic; stop tracking it.
-            closest = None;
-        } else if hits == 0 {
-            if let Some((distance, start)) = closest_window(&cleaned, query) {
-                let better = closest
-                    .as_ref()
-                    .map_or(true, |current| distance < current.distance);
-                if better {
-                    closest = Some(ClosestMatch {
-                        distance,
-                        window: cleaned[start..start + query_len].to_string(),
-                        read: cleaned,
-                    });
-                }
+        if options.is_exact() {
+            // The fast path: substring containment, diagnostic only while the
+            // sample has no hits. Identical work to v0.4.0.
+            if cleaned.contains(sequence) {
+                scan.exact += 1;
+                // A hit means this sample needs no diagnostic; stop tracking it.
+                scan.closest = None;
+            } else if scan.exact == 0 {
+                let forward = closest_window(&cleaned, query);
+                record_closest(&mut scan.closest, forward, &cleaned, query_len);
             }
+            continue;
+        }
+
+        let forward = closest_window(&cleaned, query);
+        let reverse = reverse_query.and_then(|rc| closest_window(&cleaned, rc));
+        let forward_distance = forward.map(|(distance, _)| distance);
+        let reverse_distance = reverse.map(|(distance, _)| distance);
+
+        let forward_hit = forward_distance == Some(0);
+        let reverse_hit = reverse_distance == Some(0);
+        if forward_hit {
+            scan.exact += 1;
+        }
+        if reverse_hit {
+            scan.reverse += 1;
+        }
+        if forward_hit || reverse_hit {
+            scan.combined += 1;
+        }
+
+        // The nearest window in either searched orientation, for this read.
+        let best = forward_distance.into_iter().chain(reverse_distance).min();
+        if let Some(distance) = best {
+            if scan.best_distance.map_or(true, |seen| distance < seen) {
+                scan.best_distance = Some(distance);
+            }
+            if distance <= options.max_mismatches {
+                scan.within_tolerance += 1;
+            }
+        }
+
+        if scan.exact == 0 {
+            record_closest(&mut scan.closest, forward, &cleaned, query_len);
         }
     }
 
-    Ok((hits, closest))
+    if options.is_exact() {
+        // With nothing extra asked for, the derived columns are the exact ones.
+        scan.combined = scan.exact;
+        scan.within_tolerance = scan.exact;
+    }
+
+    Ok(scan)
+}
+
+/// Keeps the nearest forward window seen so far in `slot`. `forward` is the
+/// already-computed `(distance, start)` for `cleaned`, so no re-scan is needed.
+fn record_closest(
+    slot: &mut Option<ClosestMatch>,
+    forward: Option<(usize, usize)>,
+    cleaned: &str,
+    query_len: usize,
+) {
+    let Some((distance, start)) = forward else {
+        return;
+    };
+    let better = slot
+        .as_ref()
+        .map_or(true, |current| distance < current.distance);
+    if better {
+        *slot = Some(ClosestMatch {
+            distance,
+            window: cleaned[start..start + query_len].to_string(),
+            read: cleaned.to_string(),
+        });
+    }
 }
 
 /// Finds the window in `cleaned` with the fewest mismatches against `query`.
@@ -425,12 +583,25 @@ fn closest_window(cleaned: &str, query: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// Counts one sequence across `files` and writes a single combined CSV whose
-/// header is `sample,<SEQUENCE>`, followed by one row per sample and a total.
+/// The v0.4.0 entry point: exact containment of `sequence` across `files`,
+/// written to `sequencecount.csv` with header `sample,<SEQUENCE>`, one row per
+/// sample in browse order, then a total row.
 pub fn count_sequence_across(
     files: &[PathBuf],
     sequence: &str,
     results_dir: &Path,
+) -> Result<SequenceQueryResult, String> {
+    count_sequence_across_with(files, sequence, results_dir, &SearchOptions::default())
+}
+
+/// As [`count_sequence_across`], but with reverse-complement and
+/// mismatch-tolerance options. With default options the file written is
+/// byte-identical to a v0.4.0 run; enabling an option only adds columns.
+pub fn count_sequence_across_with(
+    files: &[PathBuf],
+    sequence: &str,
+    results_dir: &Path,
+    options: &SearchOptions,
 ) -> Result<SequenceQueryResult, String> {
     fs::create_dir_all(results_dir).map_err(|e| {
         format!(
@@ -440,47 +611,112 @@ pub fn count_sequence_across(
     })?;
 
     let mut hits = Vec::with_capacity(files.len());
-    let mut total = 0u64;
     for path in files {
-        let (count, closest) = scan_sequence_in_file(path, sequence)?;
-        total += count;
-        hits.push(SampleHit {
-            sample_name: sample_name_from_path(path),
-            count,
-            closest,
-        });
+        let scan = scan_sequence_in_file_with(path, sequence, options)?;
+        hits.push(sample_hit_from_scan(path, scan));
     }
 
-    let output_path = results_dir.join("sequencecount.csv");
-    write_sequence_counts(&output_path, sequence, &hits, total)?;
-
-    Ok(SequenceQueryResult {
-        sequence: sequence.to_string(),
-        hits,
-        total,
-        output_path,
-    })
+    let result = aggregate_hits(results_dir, sequence, hits, *options);
+    write_sequence_result(&result)?;
+    Ok(result)
 }
 
-fn write_sequence_counts(
-    path: &Path,
+/// Turns one file's scan into its sample row. Split out so a caller can scan
+/// files in parallel — the GUI does — and still aggregate and write through
+/// the same code path as the TUI.
+pub fn sample_hit_from_scan(path: &Path, scan: FileScan) -> SampleHit {
+    SampleHit {
+        sample_name: sample_name_from_path(path),
+        count: scan.exact,
+        closest: scan.closest,
+        reverse: scan.reverse,
+        combined: scan.combined,
+        within_tolerance: scan.within_tolerance,
+        best_distance: scan.best_distance,
+    }
+}
+
+/// Sums `hits` (already in browse order) and points the result at the combined
+/// CSV, without writing anything.
+pub fn aggregate_hits(
+    results_dir: &Path,
     sequence: &str,
-    hits: &[SampleHit],
-    total: u64,
-) -> Result<(), String> {
+    hits: Vec<SampleHit>,
+    options: SearchOptions,
+) -> SequenceQueryResult {
+    SequenceQueryResult {
+        sequence: sequence.to_string(),
+        options,
+        total: hits.iter().map(|hit| hit.count).sum(),
+        reverse_total: hits.iter().map(|hit| hit.reverse).sum(),
+        combined_total: hits.iter().map(|hit| hit.combined).sum(),
+        within_tolerance_total: hits.iter().map(|hit| hit.within_tolerance).sum(),
+        hits,
+        output_path: results_dir.join("sequencecount.csv"),
+    }
+}
+
+/// The combined CSV's header for a given set of options. A default search
+/// keeps the v0.4.0 header exactly; each option only ever adds columns.
+pub fn sequence_csv_header(sequence: &str, options: &SearchOptions) -> String {
+    let mut header = format!("sample,{sequence}");
+    if options.reverse_complement {
+        header.push_str(&format!(",{sequence}_rc,combined"));
+    }
+    if options.max_mismatches > 0 {
+        header.push_str(&format!(",within_{},best_mismatches", options.max_mismatches));
+    }
+    header
+}
+
+/// Writes the combined CSV described by [`sequence_csv_header`]: one row per
+/// sample in browse order, then a `total` row. The `best_mismatches` column has
+/// no total, so its field in the last row is empty.
+pub fn write_sequence_result(result: &SequenceQueryResult) -> Result<(), String> {
+    let path = &result.output_path;
+    // Creating the folder here means a caller that scanned files itself (the
+    // GUI) can call this directly without a separate setup step.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Could not create results directory '{}': {e}",
+                parent.display()
+            )
+        })?;
+    }
     let mut file =
         File::create(path).map_err(|e| format!("Could not create output '{}': {e}", path.display()))?;
 
-    writeln!(file, "sample,{sequence}")
-        .map_err(|e| format!("Could not write output '{}': {e}", path.display()))?;
-    for hit in hits {
-        writeln!(file, "{},{}", hit.sample_name, hit.count)
-            .map_err(|e| format!("Could not write output '{}': {e}", path.display()))?;
-    }
-    writeln!(file, "total,{total}")
-        .map_err(|e| format!("Could not write output '{}': {e}", path.display()))?;
+    let write_line = |file: &mut File, line: String| -> Result<(), String> {
+        writeln!(file, "{line}")
+            .map_err(|e| format!("Could not write output '{}': {e}", path.display()))
+    };
 
-    Ok(())
+    write_line(&mut file, sequence_csv_header(&result.sequence, &result.options))?;
+
+    for hit in &result.hits {
+        let mut row = format!("{},{}", hit.sample_name, hit.count);
+        if result.options.reverse_complement {
+            row.push_str(&format!(",{},{}", hit.reverse, hit.combined));
+        }
+        if result.options.max_mismatches > 0 {
+            let best = hit
+                .best_distance
+                .map(|distance| distance.to_string())
+                .unwrap_or_default();
+            row.push_str(&format!(",{},{}", hit.within_tolerance, best));
+        }
+        write_line(&mut file, row)?;
+    }
+
+    let mut total_row = format!("total,{}", result.total);
+    if result.options.reverse_complement {
+        total_row.push_str(&format!(",{},{}", result.reverse_total, result.combined_total));
+    }
+    if result.options.max_mismatches > 0 {
+        total_row.push_str(&format!(",{},", result.within_tolerance_total));
+    }
+    write_line(&mut file, total_row)
 }
 
 #[cfg(test)]
@@ -612,6 +848,25 @@ mod tests {
     }
 
     #[test]
+    fn examine_honours_the_length_filter() {
+        let dir = temp_dir("examine_filter");
+        let input = dir.join("sample4_unbinned_reads");
+        fs::create_dir_all(&dir).expect("create input dir");
+        fs::write(&input, "ACGTAA\nACGTCC\nGGGGTTTT\nGGGGAAAA\n").expect("write input");
+
+        let full = examine_file(&input).expect("full");
+        let filtered = examine_file_with(&input, Some(4)).expect("filtered");
+        assert_eq!(full.unique_sequences, 4);
+        assert_eq!(filtered.unique_sequences, 2);
+        // Tie on count, so alphabetical order picks the winner.
+        assert_eq!(filtered.top[0].sequence, "ACGT");
+        assert_eq!(filtered.top[0].length, 4);
+        assert_eq!(filtered.top[0].count, 2);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn parses_target_sequence() {
         assert_eq!(parse_target_sequence("acgt").unwrap(), "ACGT");
         assert_eq!(parse_target_sequence("  ACGT  ").unwrap(), "ACGT");
@@ -707,6 +962,196 @@ mod tests {
         assert_eq!(lines[1], "sample1,2");
         assert_eq!(lines[2], "sample2,1");
         assert_eq!(lines[3], "total,3");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reverse_complements_bases_in_reverse_order() {
+        assert_eq!(reverse_complement("ACGT"), "ACGT");
+        assert_eq!(reverse_complement("AAGC"), "GCTT");
+        assert_eq!(reverse_complement("AATTGGCC"), "GGCCAATT");
+        assert_eq!(reverse_complement("A"), "T");
+    }
+
+    #[test]
+    fn header_for_default_options_is_the_v0_4_0_header() {
+        assert_eq!(sequence_csv_header("ACGT", &SearchOptions::default()), "sample,ACGT");
+    }
+
+    #[test]
+    fn header_gains_columns_only_for_options_that_are_on() {
+        let rc = SearchOptions {
+            reverse_complement: true,
+            ..SearchOptions::default()
+        };
+        let mm = SearchOptions {
+            max_mismatches: 2,
+            ..SearchOptions::default()
+        };
+        assert_eq!(sequence_csv_header("ACGT", &rc), "sample,ACGT,ACGT_rc,combined");
+        assert_eq!(
+            sequence_csv_header("ACGT", &mm),
+            "sample,ACGT,within_2,best_mismatches"
+        );
+        assert_eq!(
+            sequence_csv_header("ACGT", &SearchOptions { max_mismatches: 2, ..rc }),
+            "sample,ACGT,ACGT_rc,combined,within_2,best_mismatches"
+        );
+    }
+
+    #[test]
+    fn counts_forward_and_reverse_strands_separately_and_once_combined() {
+        let dir = temp_dir("rc");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let input = dir.join("sample9_unbinned_reads");
+        // forward-only, reverse-only, both, neither.
+        fs::write(&input, "TTACGGAA\nGGCCGTCC\nACGGCCGT\nTTTT\n").expect("write input");
+
+        let options = SearchOptions {
+            reverse_complement: true,
+            ..SearchOptions::default()
+        };
+        let scan = scan_sequence_in_file_with(&input, "ACGG", &options).expect("scan");
+        assert_eq!(scan.exact, 2);
+        assert_eq!(scan.reverse, 2);
+        // The read containing both strands is still counted once.
+        assert_eq!(scan.combined, 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_column_does_not_move_when_options_are_enabled() {
+        let dir = temp_dir("rc_stable");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let a = dir.join("sample1_unbinned_reads");
+        let b = dir.join("sample2_unbinned_reads");
+        fs::write(&a, "TTACGGAA\nACGGCCGT\n").expect("write a");
+        fs::write(&b, "GGCCGTCC\nTTTT\n").expect("write b");
+        let files = vec![a, b];
+
+        let plain = count_sequence_across(&files, "ACGG", &results_dir(&dir)).expect("plain");
+        let options = SearchOptions {
+            reverse_complement: true,
+            max_mismatches: 3,
+        };
+        let extended =
+            count_sequence_across_with(&files, "ACGG", &dir.join("other"), &options).expect("extended");
+
+        assert_eq!(plain.total, extended.total, "exact counts must not move");
+        assert_eq!(
+            plain.hits.iter().map(|h| h.count).collect::<Vec<_>>(),
+            extended.hits.iter().map(|h| h.count).collect::<Vec<_>>()
+        );
+        assert_eq!(extended.reverse_total, 2);
+        assert_eq!(extended.combined_total, 3);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn counts_reads_within_mismatch_tolerance() {
+        let dir = temp_dir("mismatch");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let input = dir.join("sample10_unbinned_reads");
+        // exact / one mismatch / four mismatches / shorter than the query
+        fs::write(&input, "AACGTT\nACAT\nTTTT\nAC\n").expect("write input");
+
+        let options = SearchOptions {
+            max_mismatches: 1,
+            ..SearchOptions::default()
+        };
+        let scan = scan_sequence_in_file_with(&input, "ACGT", &options).expect("scan");
+        assert_eq!(scan.exact, 1);
+        assert_eq!(scan.within_tolerance, 2, "exact plus the one-mismatch read");
+        assert_eq!(scan.best_distance, Some(0));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_tolerance_covers_both_strands_when_reverse_complement_is_on() {
+        let dir = temp_dir("mismatch_zero");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let input = dir.join("sample11_unbinned_reads");
+        fs::write(&input, "TTACGGAA\nGGCCGTCC\nACGGCCGT\nTTTT\n").expect("write input");
+
+        // Both strands with no tolerance: "within 0 mismatches" must agree with
+        // the combined containment count, and with the exact count when only
+        // the forward strand is searched.
+        let forward_only =
+            scan_sequence_in_file_with(&input, "ACGG", &SearchOptions::default()).expect("forward");
+        let both_strands = scan_sequence_in_file_with(
+            &input,
+            "ACGG",
+            &SearchOptions {
+                reverse_complement: true,
+                ..SearchOptions::default()
+            },
+        )
+        .expect("both strands");
+
+        assert_eq!(forward_only.exact, 2);
+        assert_eq!(forward_only.within_tolerance, forward_only.exact);
+        assert_eq!(both_strands.within_tolerance, both_strands.combined);
+        assert_eq!(both_strands.best_distance, Some(0));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scans_shorter_than_query_have_no_best_distance() {
+        let dir = temp_dir("mismatch_short");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let input = dir.join("sample12_unbinned_reads");
+        fs::write(&input, "AC\nGAT\n").expect("write input");
+
+        let scan = scan_sequence_in_file_with(
+            &input,
+            "ACGTACGT",
+            &SearchOptions {
+                max_mismatches: 2,
+                ..SearchOptions::default()
+            },
+        )
+        .expect("scan");
+        assert_eq!(scan.exact, 0);
+        assert_eq!(scan.best_distance, None);
+        assert_eq!(scan.within_tolerance, 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parallel_scan_aggregate_write_matches_the_sequential_helper() {
+        let dir = temp_dir("aggregate");
+        fs::create_dir_all(&dir).expect("create input dir");
+        let a = dir.join("sample1_unbinned_reads");
+        let b = dir.join("sample2_unbinned_reads");
+        fs::write(&a, "ACGTAA\nTTTT\nACGT\n").expect("write a");
+        fs::write(&b, "CCCC\nACGTACGT\n").expect("write b");
+        let files = vec![a.clone(), b.clone()];
+
+        let sequential = count_sequence_across(&files, "ACGT", &dir.join("seq")).expect("sequential");
+
+        // What the GUI does: scan each file on its own, then aggregate and write.
+        let hits: Vec<SampleHit> = files
+            .iter()
+            .map(|path| {
+                let scan = scan_sequence_in_file_with(path, "ACGT", &SearchOptions::default())
+                    .expect("scan");
+                sample_hit_from_scan(path, scan)
+            })
+            .collect();
+        let result = aggregate_hits(&dir.join("manual"), "ACGT", hits, SearchOptions::default());
+        write_sequence_result(&result).expect("write");
+
+        assert_eq!(result.total, sequential.total);
+        assert_eq!(
+            fs::read_to_string(&result.output_path).expect("manual csv"),
+            fs::read_to_string(&sequential.output_path).expect("helper csv")
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

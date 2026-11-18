@@ -15,10 +15,12 @@ pub mod count;
 pub mod scan;
 
 pub use count::{
-    clean_sequence, compute_run_totals, count_file, count_sequence_across, examine_file,
-    parse_length_filter, parse_target_sequence, scan_sequence_in_file, start_counting_session,
-    top_sequences, ClosestMatch, CountResult, CountingSession, ExamineEntry, ExamineResult,
-    RunTotals, SampleHit, SequenceQueryResult, TOP_N,
+    aggregate_hits, clean_sequence, compute_run_totals, count_file, count_sequence_across,
+    count_sequence_across_with, examine_file, examine_file_with, parse_length_filter,
+    parse_target_sequence, reverse_complement, sample_hit_from_scan, scan_sequence_in_file,
+    scan_sequence_in_file_with, sequence_csv_header, start_counting_session, top_sequences,
+    write_sequence_result, ClosestMatch, CountResult, CountingSession, ExamineEntry, ExamineResult,
+    FileScan, RunTotals, SampleHit, SearchOptions, SequenceQueryResult, TOP_N,
 };
 pub use scan::{
     is_read_file, list_directory_for_browse, output_path, results_dir, sample_name_from_path,
