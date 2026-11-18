@@ -170,8 +170,12 @@ fn counts_table(ui: &mut Ui, state: &mut AppState, actions: &mut Actions) {
 
 fn live_table(ui: &mut Ui, state: &mut AppState) {
     let sort = state.preview_sort;
-    let tolerant = state.search_options.max_mismatches > 0;
-    let reverse = state.search_options.reverse_complement;
+    // The columns describe the numbers on screen, not the options the form is
+    // set to: with mismatches on the live counts are paused, so what is showing
+    // may be an earlier exact-only scan or an explicit tolerant run.
+    let shown = state.live.as_ref().map(|result| result.options);
+    let tolerant = shown.is_some_and(|options| options.max_mismatches > 0);
+    let reverse = shown.is_some_and(|options| options.reverse_complement);
 
     ui.horizontal(|ui| {
         if let Some(result) = &state.live {
@@ -212,15 +216,11 @@ fn live_table(ui: &mut Ui, state: &mut AppState) {
                 header.col(|ui| column(ui, "Count", PreviewSort::Count));
                 header.col(|ui| column(ui, "Closest", PreviewSort::Closest));
                 header.col(|ui| {
-                    ui.label(
-                        egui::RichText::new(if tolerant {
-                            "Within tol."
-                        } else {
-                            "Nearest window"
-                        })
-                        .strong()
-                        .color(MUTED),
-                    );
+                    let label = match shown.filter(|options| options.max_mismatches > 0) {
+                        Some(options) => format!("Within {}", options.max_mismatches),
+                        None => "Nearest window".to_string(),
+                    };
+                    ui.label(egui::RichText::new(label).strong().color(MUTED));
                 });
             })
             .body(|mut body| {

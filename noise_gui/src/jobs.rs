@@ -19,15 +19,18 @@ use noise_core::{
 
 use crate::state::{PendingRun, SequenceRow, SEQUENCE_ROW_LIMIT};
 
-/// The live per-sample counts for the current query, already aggregated.
-pub struct LiveCounts {
-    pub result: SequenceQueryResult,
-}
+/// Which job an event came from, so a result can be matched to the inputs it was
+/// started with — and thrown away when those inputs are no longer what is on
+/// screen. `AppState` mints these; the runner only tags events with them.
+pub type JobId = u64;
 
 pub enum JobEvent {
-    /// Per-file progress, for the status bar.
+    /// Per-file progress, for the status bar. Only explicit runs report
+    /// progress: a live scan is exact-mode only (see
+    /// `AppState::live_is_paused_for_mismatches`) and finishes in a fraction of
+    /// a second, so it has no bar to drive and must never disturb a run's.
     Progress { done: usize, total: usize },
-    LiveCounts(LiveCounts),
+    LiveCounts { id: JobId, result: SequenceQueryResult },
     Counts {
         results: Vec<CountResult>,
         totals: RunTotals,
@@ -92,7 +95,7 @@ impl JobRunner {
             } => {
                 thread::spawn(move || {
                     let started = Instant::now();
-                    let result = scan_all(&sender, &files, &sequence, &options, &results_dir);
+                    let result = scan_all(&sender, &files, &sequence, &options, &results_dir, true);
                     if let Some(result) = &result {
                         match write_sequence_result(result) {
                             Ok(()) => {
@@ -113,9 +116,12 @@ impl JobRunner {
     }
 
     /// Recomputes the live per-sample counts for the current query, writing
-    /// nothing: the Results tab's charts read these from state instead.
+    /// nothing: the Results tab's charts read these from state instead. `id`
+    /// comes from `AppState::claim_live_scan`, which owns the rule that only one
+    /// live scan runs at a time.
     pub fn start_live_counts(
         &self,
+        id: JobId,
         files: Vec<PathBuf>,
         sequence: String,
         options: SearchOptions,
@@ -123,8 +129,9 @@ impl JobRunner {
     ) {
         let sender = self.sender.clone();
         thread::spawn(move || {
-            if let Some(result) = scan_all(&sender, &files, &sequence, &options, &results_dir) {
-                let _ = sender.send(JobEvent::LiveCounts(LiveCounts { result }));
+            if let Some(result) = scan_all(&sender, &files, &sequence, &options, &results_dir, false)
+            {
+                let _ = sender.send(JobEvent::LiveCounts { id, result });
             }
         });
     }
@@ -156,8 +163,9 @@ fn scan_all(
     sequence: &str,
     options: &SearchOptions,
     results_dir: &Path,
+    report_progress: bool,
 ) -> Option<SequenceQueryResult> {
-    let hits = scan_files(sender, files, sequence, options)?;
+    let hits = scan_files(sender, files, sequence, options, report_progress)?;
     Some(aggregate_hits(results_dir, sequence, hits, *options))
 }
 
@@ -166,6 +174,7 @@ fn scan_files(
     files: &[PathBuf],
     sequence: &str,
     options: &SearchOptions,
+    report_progress: bool,
 ) -> Option<Vec<SampleHit>> {
     let total = files.len();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -197,11 +206,13 @@ fn scan_files(
                         errors.lock().unwrap().push(format!("{name}: {message}"));
                     }
                 }
-                let seen = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let _ = sender.send(JobEvent::Progress {
-                    done: seen,
-                    total,
-                });
+                if report_progress {
+                    let seen = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let _ = sender.send(JobEvent::Progress {
+                        done: seen,
+                        total,
+                    });
+                }
             });
         }
     });

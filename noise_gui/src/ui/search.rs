@@ -5,7 +5,7 @@
 
 use egui::Ui;
 
-use super::{ACCENT, MUTED};
+use super::{ACCENT, MUTED, WARN};
 use crate::state::{Actions, AppState, RunKind};
 
 pub fn search_tab(ui: &mut Ui, state: &mut AppState, actions: &mut Actions) {
@@ -90,21 +90,37 @@ pub fn search_tab(ui: &mut Ui, state: &mut AppState, actions: &mut Actions) {
         );
     }
 
+    if state.live_is_paused_for_mismatches() {
+        ui.label(
+            egui::RichText::new(
+                "Live counts are paused with mismatches on: a tolerant scan costs the whole sample set, so it runs only when you press Run search.",
+            )
+            .small()
+            .color(WARN),
+        );
+    }
+
     ui.add_space(8.0);
     egui::Grid::new("search_options_summary")
         .num_columns(2)
         .spacing([16.0, 4.0])
         .show(ui, |ui| {
+            // Dashes, not zeros: an un-counted query has no count to report, and
+            // a zero is the answer to a question nobody has asked yet.
+            let value = |get: fn(&noise_core::SequenceQueryResult) -> u64| {
+                state
+                    .live
+                    .as_ref()
+                    .map(|result| get(result).to_string())
+                    .unwrap_or_else(|| "—".to_string())
+            };
             for (label, value) in [
-                ("Exact count", state.live.as_ref().map(|r| r.total).unwrap_or(0)),
-                ("Combined count", state.live.as_ref().map(|r| r.combined_total).unwrap_or(0)),
-                (
-                    "Within tolerance",
-                    state.live.as_ref().map(|r| r.within_tolerance_total).unwrap_or(0),
-                ),
+                ("Exact count", value(|result| result.total)),
+                ("Combined count", value(|result| result.combined_total)),
+                ("Within tolerance", value(|result| result.within_tolerance_total)),
             ] {
                 ui.label(egui::RichText::new(label).small().color(MUTED));
-                ui.label(egui::RichText::new(value.to_string()).monospace());
+                ui.label(egui::RichText::new(value).monospace());
                 ui.end_row();
             }
         });

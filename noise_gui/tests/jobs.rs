@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use noise_gui::jobs::{JobEvent, JobRunner};
-use noise_gui::state::{AppState, PendingRun, Tab};
+use noise_gui::state::{AppState, JobState, PendingRun, Tab};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let unique = format!(
@@ -174,12 +174,14 @@ fn live_counts_write_nothing_and_agree_with_a_tolerant_core_search() {
     let runner = JobRunner::new();
 
     // A query that matches nothing exactly but sits two mismatches from `GGGG…`.
+    // The runner will scan tolerantly when asked — the rule that it must not be
+    // asked live lives in `AppState::claim_live_scan`, tested below.
     let query = "GCGTACGTACGT";
     let options = noise_core::SearchOptions {
         reverse_complement: false,
         max_mismatches: 2,
     };
-    runner.start_live_counts(files.clone(), query.to_string(), options, results.clone());
+    runner.start_live_counts(1, files.clone(), query.to_string(), options, results.clone());
     let mut runner_ref = runner;
     let events = collect(&mut runner_ref, |events| {
         events
@@ -187,7 +189,7 @@ fn live_counts_write_nothing_and_agree_with_a_tolerant_core_search() {
             .any(|event| matches!(event, JobEvent::LiveCounts { .. }))
     });
     let live = events.iter().find_map(|event| match event {
-        JobEvent::LiveCounts(update) => Some(update.result.clone()),
+        JobEvent::LiveCounts { result, .. } => Some(result.clone()),
         _ => None,
     });
     // Unwrap is about the test: the event matched above.
@@ -302,4 +304,132 @@ fn exports_reuse_the_core_sequence_table_format() {
         "the reverse-complement columns must be there: {exported}"
     );
     fs::remove_dir_all(root.parent().expect("parent")).ok();
+}
+
+/// A state over the three-sample fixture, everything selected, a valid query
+/// typed. Returns the state and the `noise_results/` folder beside its samples.
+fn state_with_query(tag: &str) -> (PathBuf, AppState) {
+    let (root, results) = fixture(tag);
+    let mut state = AppState::new();
+    state.input_folder = root.clone();
+    state.open_folder(&root, false);
+    state.query = "ACGTACGTACGT".to_string();
+    (results, state)
+}
+
+fn counted_for(state: &AppState, results: &Path) -> noise_core::SequenceQueryResult {
+    noise_core::count_sequence_across_with(
+        &state.selected_files(),
+        &state.query,
+        results,
+        &noise_core::SearchOptions::default(),
+    )
+    .expect("core search")
+}
+
+#[test]
+fn a_mismatch_tolerant_search_never_runs_live() {
+    let (_results, mut state) = state_with_query("pause");
+    let claimed = state.claim_live_scan();
+    assert!(claimed.is_some(), "an exact search does run live");
+    state.live_pending = None;
+
+    state.search_options.max_mismatches = 1;
+    assert!(state.live_is_paused_for_mismatches());
+    assert!(
+        state.claim_live_scan().is_none(),
+        "a tolerant scan costs every selected sample, so it waits for an explicit Run"
+    );
+
+    state.search_options.max_mismatches = 0;
+    assert!(
+        state.claim_live_scan().is_some(),
+        "switching tolerance off resumes live counting"
+    );
+}
+
+#[test]
+fn a_live_scan_in_flight_is_never_overlapped() {
+    let (results, mut state) = state_with_query("inflight");
+    let in_flight = counted_for(&state, &results);
+
+    let (first, _key) = state.claim_live_scan().expect("the first claim starts a scan");
+    assert!(
+        state.claim_live_scan().is_none(),
+        "a scan already running is never joined by a second one"
+    );
+
+    // Typing a new query clears what is on screen but keeps the claim, so the
+    // scan that is already running still finishes, and only then does the newest
+    // query get counted. One scan at a time, converging on what is typed now.
+    state.query = "GGGGGGGGGGGG".to_string();
+    state.clear_live();
+    assert!(
+        state.claim_live_scan().is_none(),
+        "still exactly one scan in flight"
+    );
+
+    state.apply_events(vec![JobEvent::LiveCounts {
+        id: first,
+        result: in_flight,
+    }]);
+    assert!(state.live.is_some(), "the finished scan's numbers land");
+    assert!(state.live_pending.is_none(), "the claim is spent");
+    assert!(state.live_is_stale(), "but they counted the previous query");
+
+    let (second, key) = state.claim_live_scan().expect("the newest query is then counted");
+    assert_eq!(second, first + 1, "ids come from the state that minted them");
+    assert_eq!(key.2, "GGGGGGGGGGGG", "the new scan counts what is typed now");
+}
+
+#[test]
+fn counts_for_files_that_are_no_longer_on_screen_are_thrown_away() {
+    let (results, mut state) = state_with_query("superseded");
+    let (other_root, _other_results) = fixture("superseded_other");
+    let stale = counted_for(&state, &results);
+    let (id, _key) = state.claim_live_scan().expect("a scan starts");
+
+    // Moving on to another folder drops the claim, so a result about files the
+    // user has left behind can never flash into view when it finally arrives.
+    state.open_folder(&other_root, false);
+    state.apply_events(vec![JobEvent::LiveCounts { id, result: stale }]);
+    assert!(
+        state.live.is_none(),
+        "a discarded scan cannot put numbers on screen"
+    );
+    fs::remove_dir_all(other_root.parent().expect("parent")).ok();
+    fs::remove_dir_all(results.parent().expect("parent")).ok();
+}
+
+#[test]
+fn a_live_result_never_disturbs_a_run_in_progress() {
+    let (results, mut state) = state_with_query("progress");
+    let live = counted_for(&state, &results);
+
+    // A live scan started, then a count run began over the top of it. The run
+    // owns the progress bar: a live result landing mid-run must count its own
+    // numbers without resetting the run to Idle or reporting the wrong totals.
+    let (id, _key) = state.claim_live_scan().expect("a live scan is in flight");
+    state.job = JobState::Running { done: 0, total: 3 };
+    assert!(
+        state.claim_live_scan().is_none(),
+        "no live scan starts while a run has the worker"
+    );
+
+    state.apply_events(vec![
+        JobEvent::Progress { done: 1, total: 3 },
+        JobEvent::LiveCounts { id, result: live },
+    ]);
+    match &state.job {
+        JobState::Running { done, total } => {
+            assert_eq!(
+                (*done, *total),
+                (1, 3),
+                "the live result must not disturb the run's progress"
+            )
+        }
+        other => panic!("the live result disturbed the run: {other:?}"),
+    }
+    assert!(state.live.is_some(), "the live counts still arrived");
+    fs::remove_dir_all(state.input_folder.parent().expect("parent")).ok();
 }

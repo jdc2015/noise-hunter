@@ -3,7 +3,7 @@
 
 use eframe::CreationContext;
 
-use crate::jobs::{JobEvent, JobRunner};
+use crate::jobs::JobRunner;
 use crate::state::{
     Actions, AppState, ExportKind, JobState, PendingRun, RunKind, Tab,
 };
@@ -30,95 +30,6 @@ impl NoiseApp {
         Self {
             state,
             jobs: JobRunner::new(),
-        }
-    }
-
-    /// Folds everything the worker thread has reported into the app state.
-    fn take_events(&mut self) {
-        for event in self.jobs.drain() {
-            match event {
-                JobEvent::Progress { done, total } => {
-                    if let JobState::Running { .. } = self.state.job {
-                        self.state.job = JobState::Running { done, total };
-                    }
-                }
-                JobEvent::LiveCounts(update) => {
-                    self.state.live_source =
-                        Some((self.state.query.clone(), self.state.search_options, self.state.selected.len()));
-                    let total = update.result.total;
-                    self.state.live = Some(update.result);
-                    if self.state.job.is_running() {
-                        self.state.job = JobState::Idle;
-                    }
-                    if self.state.active_tab != Tab::Search {
-                        self.state.info(format!("Live: {total} reads matched"));
-                    }
-                }
-                JobEvent::Counts {
-                    results,
-                    totals,
-                    elapsed,
-                } => {
-                    let files = results.len();
-                    self.state.info(format!(
-                        "Counted {files} sample{} in {:.2}s",
-                        if files == 1 { "" } else { "s" },
-                        elapsed.as_secs_f64()
-                    ));
-                    self.state.totals = Some(totals);
-                    self.state.counts = results;
-                    self.state.results_view = crate::state::ResultsView::Counts;
-                    self.state.job = JobState::Finished { elapsed, files };
-                    self.state.active_tab = Tab::Results;
-                }
-                JobEvent::SearchFinished {
-                    result,
-                    written,
-                    elapsed,
-                } => {
-                    let files = result.hits.len();
-                    let mut summary = format!(
-                        "Search finished in {:.2}s: {} reads matched across {files} sample{}",
-                        elapsed.as_secs_f64(),
-                        result.total,
-                        if files == 1 { "" } else { "s" }
-                    );
-                    if result.options.reverse_complement {
-                        summary.push_str(&format!(" (combined {})", result.combined_total));
-                    }
-                    if result.options.max_mismatches > 0 {
-                        summary.push_str(&format!(
-                            ", {} within {} mismatches",
-                            result.within_tolerance_total, result.options.max_mismatches
-                        ));
-                    }
-                    self.state.info(summary);
-                    self.state.live = Some(result);
-                    for path in &written {
-                        self.state.info(format!("Wrote {}", path.display()));
-                    }
-                    self.state.job = JobState::Finished { elapsed, files };
-                    self.state.results_view = crate::state::ResultsView::Live;
-                    self.state.active_tab = Tab::Results;
-                }
-                JobEvent::SequenceRows {
-                    source,
-                    rows,
-                    truncated,
-                } => {
-                    self.state.info(format!(
-                        "Loaded {} sequences from {}",
-                        rows.len(),
-                        source.file_name().and_then(|n| n.to_str()).unwrap_or("?")
-                    ));
-                    self.state.sequence_source = Some(source);
-                    self.state.sequence_rows = rows;
-                    self.state.sequence_truncated = truncated;
-                    self.state.results_view = crate::state::ResultsView::Sequences;
-                    self.state.active_tab = Tab::Results;
-                }
-                JobEvent::Error(message) => self.state.error(message),
-            }
         }
     }
 
@@ -154,25 +65,24 @@ impl NoiseApp {
         self.state.pending_existing.clear();
     }
 
-    /// The live per-sample counts, recomputed whenever the query, the options,
-    /// the length filter, or the selection changes.
+    /// Keeps the live per-sample counts moving toward what is currently typed,
+    /// selected and set. The rules about whether a scan may start at all — never
+    /// overlapping one already in flight, never for a mismatch-tolerant search,
+    /// never while a run is going — live in `AppState::claim_live_scan`.
     fn keep_live_up_to_date(&mut self) {
-        if self.state.job.is_running() || !self.state.live_is_stale() {
+        if self.state.parsed_query().is_none() {
+            if self.state.live.is_some() || self.state.live_pending.is_some() {
+                self.state.reset_live();
+            }
             return;
         }
-        let Some(sequence) = self.state.parsed_query() else {
-            self.state.live = None;
-            self.state.live_source = None;
+        let Some((id, (_folder, files, sequence, options))) = self.state.claim_live_scan() else {
             return;
         };
-        let files = self.state.selected_files();
-        if files.is_empty() {
-            return;
-        }
         let results_dir = self.state.results_dir();
         self.state.job_note = Some(format!("Counting {sequence}…"));
         self.jobs
-            .start_live_counts(files, sequence, self.state.search_options, results_dir);
+            .start_live_counts(id, files, sequence, options, results_dir);
     }
 
     fn pick_folder(&mut self) {
@@ -204,7 +114,7 @@ impl NoiseApp {
             )
         });
         if r {
-            self.state.clear_live();
+            self.state.reset_live();
         } else if o {
             self.pick_folder();
         } else if one {
@@ -267,7 +177,7 @@ impl NoiseApp {
 impl eframe::App for NoiseApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.take_events();
+        self.state.apply_events(self.jobs.drain());
         self.shortcuts(&ctx);
         self.keep_live_up_to_date();
 
@@ -321,8 +231,13 @@ impl eframe::App for NoiseApp {
         }
 
         // The window only needs repainting when something actually changed, but
-        // a job in flight must keep animating its progress bar.
-        if self.state.job.is_running() || self.state.pending.is_some() {
+        // a job in flight must keep asking: a run to animate its progress bar, a
+        // live scan because its result would otherwise sit in the channel until
+        // unrelated input happened to arrive.
+        if self.state.job.is_running()
+            || self.state.pending.is_some()
+            || self.state.live_pending.is_some()
+        {
             ctx.request_repaint();
         }
     }

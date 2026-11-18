@@ -13,6 +13,13 @@ use noise_core::{
     results_dir, sample_name_from_path,
 };
 
+use crate::jobs::{JobEvent, JobId};
+
+/// What a live scan was computed from: the folder, the selected files in browse
+/// order, the query, and the options. Comparing keys is how a result that is no
+/// longer about what is on screen gets thrown away.
+pub type LiveKey = (PathBuf, Vec<PathBuf>, String, SearchOptions);
+
 /// How many rows the sequence browser loads from one sample's `*_counts.csv`.
 pub const SEQUENCE_ROW_LIMIT: usize = 5000;
 
@@ -202,8 +209,15 @@ pub struct AppState {
     /// Live per-sample counts for the current query and options, in browse
     /// order. Recomputed whenever any input changes; feeds the Results charts.
     pub live: Option<SequenceQueryResult>,
-    /// Query + options `live` was computed with, to detect staleness.
-    pub live_source: Option<(String, SearchOptions, usize)>,
+    /// What `live` was computed from, to detect staleness.
+    pub live_source: Option<LiveKey>,
+    /// The live scan in flight, if any, as its id and the inputs it was started
+    /// with. While this is set no other live scan may start, which is what keeps
+    /// typing a sequence from starting one scan per keystroke.
+    pub live_pending: Option<(JobId, LiveKey)>,
+    /// Ids are minted here, not in the runner: the decision to start a scan and
+    /// the record of what it meant belong in the same place.
+    next_job_id: JobId,
 
     pub count_sort: SortState<CountSort>,
     pub preview_sort: SortState<PreviewSort>,
@@ -239,6 +253,8 @@ impl AppState {
             totals: None,
             live: None,
             live_source: None,
+            live_pending: None,
+            next_job_id: 0,
             count_sort: SortState::ascending(CountSort::Sample),
             preview_sort: SortState::ascending(PreviewSort::Sample),
             results_view: ResultsView::Counts,
@@ -266,7 +282,7 @@ impl AppState {
                 // Opening a folder of samples almost always means "these ones",
                 // matching the TUI's Space-to-count-everything shortcut.
                 self.selected = listing.read_files.iter().cloned().collect();
-                self.clear_live();
+                self.reset_live();
                 self.sequence_source = None;
                 self.sequence_rows.clear();
                 if !announce {
@@ -365,23 +381,168 @@ impl AppState {
         parse_target_sequence(&self.query).ok()
     }
 
-    /// Clears the live counts, so the next frame recomputes them.
+    /// Clears the live counts, so the next claim recomputes them. The scan in
+    /// flight keeps its claim: its result still lands, and the newest inputs are
+    /// scanned after it, which is what makes typing a sequence one scan after
+    /// another rather than one scan per keystroke.
     pub fn clear_live(&mut self) {
         self.live = None;
         self.live_source = None;
     }
 
-    /// True when the live counts no longer match the query, options, or
-    /// selection, so they need recomputing.
+    /// Clears the live counts *and* drops the scan in flight, so its result is
+    /// thrown away. Used when the samples themselves change — a new folder, an
+    /// explicit refresh — where counts for files that are no longer on screen
+    /// must never flash into view.
+    pub fn reset_live(&mut self) {
+        self.clear_live();
+        self.live_pending = None;
+    }
+
+    /// Mismatch searching is O(reads × query length) per file, so it never runs
+    /// live: a slider drag or one typed base must not trigger a full tolerant
+    /// re-scan of every selected sample. It stays available as an explicit Run,
+    /// which is also where its elapsed time is shown.
+    pub fn live_is_paused_for_mismatches(&self) -> bool {
+        self.search_options.max_mismatches > 0
+    }
+
+    /// True when the numbers on screen no longer match what is opened, selected,
+    /// typed, and set — so a live scan is needed.
     pub fn live_is_stale(&self) -> bool {
-        let selection = self.selected.len();
         match (&self.live_source, self.parsed_query()) {
             (None, None) => false,
             (None, Some(_)) => true,
-            (Some((query, options, seen)), Some(query_now)) => {
-                *query != query_now || *options != self.search_options || *seen != selection
-            }
             (Some(_), None) => true,
+            (Some(key), Some(query)) => {
+                key.0 != self.input_folder
+                    || key.1 != self.selected_files()
+                    || key.2 != query
+                    || key.3 != self.search_options
+            }
+        }
+    }
+
+    /// Decides whether a live scan should start now, and if so mints its id and
+    /// records it as in flight. Never overlaps scans: while one is in flight no
+    /// other starts, even if the inputs have changed since it began.
+    pub fn claim_live_scan(&mut self) -> Option<(JobId, LiveKey)> {
+        if self.job.is_running()
+            || self.live_pending.is_some()
+            || self.live_is_paused_for_mismatches()
+        {
+            return None;
+        }
+        let sequence = self.parsed_query()?;
+        let files = self.selected_files();
+        if files.is_empty() {
+            return None;
+        }
+        let key: LiveKey = (self.input_folder.clone(), files, sequence, self.search_options);
+        if !self.live_is_stale() {
+            return None;
+        }
+        let id = self.next_job_id;
+        self.next_job_id += 1;
+        self.live_pending = Some((id, key.clone()));
+        Some((id, key))
+    }
+
+    /// Folds everything the workers have reported into the state. Kept here,
+    /// rather than in the window, so the rules about which results count — and
+    /// which must never touch a run in progress — are testable without one.
+    pub fn apply_events(&mut self, events: Vec<JobEvent>) {
+        for event in events {
+            match event {
+                JobEvent::Progress { done, total } => {
+                    if let JobState::Running { .. } = self.job {
+                        self.job = JobState::Running { done, total };
+                    }
+                }
+                JobEvent::LiveCounts { id, result } => {
+                    let Some((claimed, key)) = self.live_pending.take() else {
+                        continue;
+                    };
+                    if claimed != id {
+                        // Superseded: the samples or the query changed, so these
+                        // numbers are about something no longer on screen.
+                        continue;
+                    }
+                    self.live_source = Some(key);
+                    let total = result.total;
+                    self.live = Some(result);
+                    if self.active_tab != Tab::Search {
+                        self.info(format!("Live: {total} reads matched"));
+                    }
+                }
+                JobEvent::Counts {
+                    results,
+                    totals,
+                    elapsed,
+                } => {
+                    let files = results.len();
+                    self.info(format!(
+                        "Counted {files} sample{} in {:.2}s",
+                        if files == 1 { "" } else { "s" },
+                        elapsed.as_secs_f64()
+                    ));
+                    self.totals = Some(totals);
+                    self.counts = results;
+                    self.results_view = ResultsView::Counts;
+                    self.job = JobState::Finished { elapsed, files };
+                    self.active_tab = Tab::Results;
+                }
+                JobEvent::SearchFinished {
+                    result,
+                    written,
+                    elapsed,
+                } => {
+                    let files = result.hits.len();
+                    let mut summary = format!(
+                        "Search finished in {:.2}s: {} reads matched across {files} sample{}",
+                        elapsed.as_secs_f64(),
+                        result.total,
+                        if files == 1 { "" } else { "s" },
+                    );
+                    if result.options.reverse_complement {
+                        summary.push_str(&format!(" (combined {})", result.combined_total));
+                    }
+                    if result.options.max_mismatches > 0 {
+                        summary.push_str(&format!(
+                            ", {} within {} mismatches",
+                            result.within_tolerance_total, result.options.max_mismatches
+                        ));
+                    }
+                    self.info(summary);
+                    self.live = Some(result);
+                    for path in &written {
+                        self.info(format!("Wrote {}", path.display()));
+                    }
+                    self.job = JobState::Finished { elapsed, files };
+                    self.results_view = ResultsView::Live;
+                    self.active_tab = Tab::Results;
+                }
+                JobEvent::SequenceRows {
+                    source,
+                    rows,
+                    truncated,
+                } => {
+                    self.info(format!(
+                        "Loaded {} sequences from {}",
+                        rows.len(),
+                        source
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("?")
+                    ));
+                    self.sequence_source = Some(source);
+                    self.sequence_rows = rows;
+                    self.sequence_truncated = truncated;
+                    self.results_view = ResultsView::Sequences;
+                    self.active_tab = Tab::Results;
+                }
+                JobEvent::Error(message) => self.error(message),
+            }
         }
     }
 
