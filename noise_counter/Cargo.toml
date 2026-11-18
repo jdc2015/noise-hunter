@@ -8,6 +8,10 @@ description = "Count duplicate DNA sequences in plain-text *_unbinned_reads file
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 
+# Used only by examples/baseline.rs to record golden output hashes.
+[dev-dependencies]
+sha2 = "0.11.1"
+
 [profile.release]
 lto = true
 codegen-units = 1
