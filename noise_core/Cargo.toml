@@ -1,0 +1,11 @@
+[package]
+name = "noise_core"
+version.workspace = true
+edition.workspace = true
+description = "UI-free sequence counting and sample-file discovery, shared by the noise-hunter TUI and GUI"
+
+# Deliberately dependency-free: the core is std-only so any front end can pull
+# it in without inheriting a widget toolkit. sha2 is a dev-dependency only, for
+# the golden-output test.
+[dev-dependencies]
+sha2.workspace = true

@@ -1,5 +1,3 @@
-mod count;
-mod scan;
 mod tui;
 
 fn main() {

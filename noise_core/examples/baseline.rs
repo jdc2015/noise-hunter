@@ -9,14 +9,9 @@
 //! `noise_results/` — and prints one `<sha256>  <relative/path>` line per file
 //! to stdout, which is what `baseline.sha256` holds.
 //!
-//! The counting modules are pulled in by path because `noise_counter` is a
-//! binary crate with no library target for an example to link against. After
-//! the `noise_core` extraction they come from the shared crate instead.
-
-#[path = "../src/count.rs"]
-mod count;
-#[path = "../src/scan.rs"]
-mod scan;
+//! ```text
+//! cargo run --release -p noise_core --example baseline
+//! ```
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -24,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use count::{count_file, count_sequence_across};
-use scan::list_directory_for_browse;
+use noise_core::count::{count_file, count_sequence_across};
+use noise_core::scan::list_directory_for_browse;
 
 /// The README's worked example: a 29-base query over all 96 samples, total 74985.
 const QUERY: &str = "CACCAGACACGTCTGAACTCCAGTCAC";
@@ -48,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_root = args
         .next()
         .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("target/baseline"));
+        .unwrap_or_else(|| repo_root.join("target/baseline"));
 
     if out_root.exists() {
         fs::remove_dir_all(&out_root)?;

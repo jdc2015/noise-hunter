@@ -1,0 +1,18 @@
+# Workspace for the noise-hunter tools: the shared core, the terminal UI, and
+# the desktop GUI. Profiles live here — a member crate's profile is ignored by
+# cargo (it warns and uses the root's).
+[workspace]
+resolver = "2"
+members = ["noise_core", "noise_counter"]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+
+[workspace.dependencies]
+noise_core = { path = "noise_core" }
+sha2 = "0.11.1"
+
+[profile.release]
+lto = true
+codegen-units = 1

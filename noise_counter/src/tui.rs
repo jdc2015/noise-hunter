@@ -11,12 +11,12 @@ use ratatui::widgets::{
 };
 use ratatui::{DefaultTerminal, Frame};
 
-use crate::count::{
+use noise_core::count::{
     compute_run_totals, count_file, count_sequence_across, examine_file, parse_length_filter,
     parse_target_sequence, start_counting_session, CountingSession, CountResult, ExamineEntry,
     ExamineResult, RunTotals, SampleHit, SequenceQueryResult,
 };
-use crate::scan::{list_directory_for_browse, results_dir, DirectoryListing};
+use noise_core::scan::{list_directory_for_browse, results_dir, DirectoryListing};
 
 const APP_NAME: &str = "Noise Counter";
 const APP_VERSION: &str = "v0.4.0";
