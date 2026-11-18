@@ -121,7 +121,7 @@ pub fn footer(ui: &mut Ui, state: &mut AppState) {
         if state.messages.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "R refresh  ·  O open folder  ·  1/2/3 tabs  ·  Esc clear messages",
+                    "Ctrl+O folder  ·  Ctrl+R run  ·  Ctrl+F filter  ·  1/2/3 tabs  ·  R refresh  ·  Esc clear",
                 )
                 .small()
                 .color(MUTED),

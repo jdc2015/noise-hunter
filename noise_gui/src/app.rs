@@ -5,7 +5,7 @@ use eframe::CreationContext;
 
 use crate::jobs::JobRunner;
 use crate::state::{
-    Actions, AppState, ExportKind, JobState, PendingRun, RunKind, Tab,
+    Actions, AppState, ExportKind, JobState, PendingRun, ResultsView, RunKind, Tab,
 };
 use crate::ui;
 
@@ -97,36 +97,88 @@ impl NoiseApp {
         self.state.open_folder(&path, true);
     }
 
+    /// The keyboard table. Ctrl shortcuts work even from a text field — they are
+    /// what you reach for mid-typing — while bare keys belong to whatever has
+    /// focus, so typing "1" in the query field is a digit, not a tab change.
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        // A dialog on screen or a text field with focus means keys belong to
-        // that, not to the shortcut table.
-        if self.state.pending.is_some() || ctx.memory(|memory| memory.focused().is_some()) {
-            return;
-        }
-        let (r, o, one, two, three, esc) = ctx.input(|input| {
+        let (open, run, find, refresh, one, two, three, esc) = ctx.input(|input| {
+            let cmd = input.modifiers.command;
             (
+                cmd && input.key_pressed(egui::Key::O),
+                cmd && input.key_pressed(egui::Key::R),
+                cmd && input.key_pressed(egui::Key::F),
                 input.key_pressed(egui::Key::R),
-                input.key_pressed(egui::Key::O),
                 input.key_pressed(egui::Key::Num1),
                 input.key_pressed(egui::Key::Num2),
                 input.key_pressed(egui::Key::Num3),
                 input.key_pressed(egui::Key::Escape),
             )
         });
-        if r {
-            self.state.reset_live();
-        } else if o {
+
+        if open {
             self.pick_folder();
+            return;
+        }
+        if find {
+            // There is one filter box and it is on tab 1, so "find" means "go
+            // there and put the cursor in it".
+            self.state.active_tab = Tab::BrowseCount;
+            self.state.focus_filter = true;
+            return;
+        }
+        if run {
+            self.run_current_tab();
+            return;
+        }
+        if esc {
+            // The dialog first, then the selection, then the messages: Esc undoes
+            // the most recent thing still on screen.
+            if self.state.pending.is_some() {
+                self.state.pending = None;
+                self.state.pending_existing.clear();
+            } else if !self.state.selected.is_empty() {
+                self.state.select_none();
+                self.state.info("Selection cleared — Select all puts it back.");
+            } else {
+                self.state.messages.clear();
+            }
+            return;
+        }
+        if self.state.pending.is_some() || ctx.memory(|memory| memory.focused().is_some()) {
+            return;
+        }
+        if refresh {
+            self.state.reset_live();
         } else if one {
             self.state.active_tab = Tab::BrowseCount;
         } else if two {
             self.state.active_tab = Tab::Search;
         } else if three {
             self.state.active_tab = Tab::Results;
-        } else if esc {
-            self.state.pending = None;
-            self.state.pending_existing.clear();
-            self.state.messages.clear();
+        }
+    }
+
+    /// Runs the job the tab in front of you is about; on Results, the one whose
+    /// numbers are showing. Validation and the overwrite guard are the same as
+    /// the buttons', because this goes through `prepare_*` and `launch` too.
+    fn run_current_tab(&mut self) {
+        if self.state.job.is_running() {
+            return;
+        }
+        let kind = match self.state.active_tab {
+            Tab::BrowseCount => RunKind::Count,
+            Tab::Search => RunKind::Search,
+            Tab::Results => match self.state.results_view {
+                ResultsView::Counts => RunKind::Count,
+                ResultsView::Live | ResultsView::Sequences => RunKind::Search,
+            },
+        };
+        let run = match kind {
+            RunKind::Count => self.state.prepare_count_run(),
+            RunKind::Search => self.state.prepare_search_run(),
+        };
+        if let Some(run) = run {
+            self.launch(run);
         }
     }
 

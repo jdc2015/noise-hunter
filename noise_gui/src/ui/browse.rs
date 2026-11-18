@@ -124,6 +124,11 @@ fn filter_row(ui: &mut Ui, state: &mut AppState) {
                 .hint_text("sample name or part of a file name")
                 .desired_width(260.0),
         );
+        // Ctrl+F means "put the cursor here", and only the widget can take focus.
+        if state.focus_filter {
+            response.request_focus();
+            state.focus_filter = false;
+        }
         if !state.filter_text.is_empty() && ui.button("clear").clicked() {
             state.filter_text.clear();
         }

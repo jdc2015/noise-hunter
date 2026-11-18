@@ -192,6 +192,9 @@ pub struct AppState {
     pub listing: Option<DirectoryListing>,
     pub selected: HashSet<PathBuf>,
     pub filter_text: String,
+    /// Set by Ctrl+F, consumed by the filter box on the next frame: focus has to
+    /// be requested from the widget itself, which only the tab can do.
+    pub focus_filter: bool,
     pub results_override: Option<PathBuf>,
 
     /// Count tab.
@@ -243,6 +246,7 @@ impl AppState {
             listing: None,
             selected: HashSet::new(),
             filter_text: String::new(),
+            focus_filter: false,
             results_override: None,
             length_filter: String::new(),
             filter_error: None,
