@@ -219,3 +219,7 @@ sequential one and the GUI's parallel one — reproduce it exactly.
 - The GUI's sequence browser reads the first 5,000 rows of a sample's CSV.
 - Charts show the largest 24 samples, with a note when more exist.
 
+## License
+
+MIT — see [LICENSE](LICENSE). Copyright (c) 2026 John D Curry.
+

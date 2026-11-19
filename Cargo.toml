@@ -8,6 +8,7 @@ members = ["noise_core", "noise_counter", "noise_gui"]
 [workspace.package]
 version = "0.5.0"
 edition = "2021"
+license = "MIT"
 
 [workspace.dependencies]
 noise_core = { path = "noise_core" }

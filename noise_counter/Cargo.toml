@@ -2,6 +2,7 @@
 name = "noise_counter"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Count duplicate DNA sequences in plain-text *_unbinned_reads files"
 
 [dependencies]

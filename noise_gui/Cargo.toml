@@ -2,6 +2,7 @@
 name = "noise_gui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Desktop GUI for counting duplicate DNA sequences and searching reads for a sequence"
 
 [dependencies]
