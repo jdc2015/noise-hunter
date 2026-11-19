@@ -11,19 +11,26 @@ const CHART_HEIGHT: f32 = 210.0;
 /// largest samples and says what it left out.
 const MAX_BARS: usize = 24;
 
-pub fn charts_section(ui: &mut Ui, state: &mut AppState) {
+/// `max_height` is what the tables below may not lose: the charts scroll inside
+/// it, so a window with every chart open still leaves the table its rows.
+pub fn charts_section(ui: &mut Ui, state: &mut AppState, max_height: f32) {
     egui::CollapsingHeader::new("Charts")
         .default_open(true)
         .id_salt("charts")
         .show(ui, |ui| {
-            if state.live.is_some() {
-                sequence_charts(ui, state);
-            }
-            if !state.counts.is_empty() {
-                count_charts(ui, state);
-            }
+            egui::ScrollArea::vertical()
+                .id_salt("charts_scroll")
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    if state.live.is_some() {
+                        sequence_charts(ui, state);
+                    }
+                    if !state.counts.is_empty() {
+                        count_charts(ui, state);
+                    }
+                });
         });
-    let _ = state;
 }
 
 /// Per-sample counts for the current query, plus how those counts are spread.

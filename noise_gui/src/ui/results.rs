@@ -54,7 +54,16 @@ pub fn results_tab(ui: &mut Ui, state: &mut AppState, actions: &mut Actions) {
         });
     });
     ui.add_space(4.0);
-    super::charts::charts_section(ui, state);
+    // Charts come first, but never at the table's expense: three plots (counts
+    // per sample, the distribution, used-versus-skipped) are ~700 px, which is
+    // more than a 780 px window has for the whole tab, and the table below was
+    // pushed past the bottom edge and clipped away. They scroll inside whatever
+    // is left once the table has room for its summary line, header and rows.
+    // The 300 px reserve is measured, not guessed: the layout test fails if the
+    // table is ever given less than it needs.
+    const TABLE_RESERVE: f32 = 300.0;
+    let charts_height = (ui.available_height() - TABLE_RESERVE).max(80.0);
+    super::charts::charts_section(ui, state, charts_height);
 
     match view {
         ResultsView::Counts if !state.counts.is_empty() => counts_table(ui, state, actions),
