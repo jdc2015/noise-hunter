@@ -80,7 +80,7 @@ sample96,86
 total,74985
 ```
 
-That is the real result of the 29-base query over all 96 samples in
+That is the real result of the 27-base query over all 96 samples in
 `counted_results`.
 
 ### Options and the columns they add
