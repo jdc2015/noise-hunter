@@ -42,18 +42,18 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 
 ## Phase summary
 
-| Phase | Work | Est. |
-|---|---|---|
-| 0 | Tables in the repo, parsers, fixtures | 1–2 h |
-| 1 | Read anatomy: one function, one struct | 2–3 h |
-| 2 | Per-sample noise profile + CSV | 2–3 h |
-| 3 | Index-aware counts (own/other/position) | 2–3 h |
-| 4 | Barcode check against the probe table | 1–2 h |
-| 5 | Poly-G: effective length, optional trimming | 1–2 h |
-| 6 | Cross-sample pattern search | 4–6 h |
-| 7 | Reporting + batch mode | 2–3 h |
-| 8 | GUI surfaces; TUI if cheap | 3–4 h |
-| 9 | Docs, version 0.6.0, verification sweep | 1–2 h |
+| Phase | Work | Est. | Status |
+|---|---|---|---|
+| 0 | Tables in the repo, parsers, fixtures | 1–2 h | done |
+| 1 | Read anatomy: one function, one struct | 2–3 h | |
+| 2 | Per-sample noise profile + CSV | 2–3 h | |
+| 3 | Index-aware counts (own/other/position) | 2–3 h | |
+| 4 | Barcode check against the probe table | 1–2 h | |
+| 5 | Poly-G: effective length, optional trimming | 1–2 h | |
+| 6 | Cross-sample pattern search | 4–6 h | |
+| 7 | Reporting + batch mode | 2–3 h | |
+| 8 | GUI surfaces; TUI if cheap | 3–4 h | |
+| 9 | Docs, version 0.6.0, verification sweep | 1–2 h | |
 
 Dependencies: 0 → 1 → {2, 3, 4, 5} → 6 → 7 → 8 → 9. Phases 3–5 are independent of
 each other and can be reordered.
@@ -65,10 +65,11 @@ each other and can be reordered.
 1. Add `docs/sample_sheet.csv` (the 96-row dual-index sheet). `docs/probe_table.csv`
    is optional and supplied only if the user chooses to commit one; keep either as
    supplied, and note the CRLF line endings.
-2. New `noise_core/src/tables.rs`: `SampleSheet::parse(&str)` and
-   `ProbeTable::parse(&str)`, tolerant of CRLF, rejecting duplicate sample names.
-   Structs: `SampleSheet { samples: Vec<SampleIndices> }`,
-   `SampleIndices { name, index1, index2 }`.
+2. New `noise_core/src/tables.rs`: `SampleSheet::parse(&str)`, tolerant of CRLF
+   and a header, rejecting duplicate sample names and indices that are not eight
+   `A/C/G/T` bases. Structs: `SampleSheet { samples: Vec<SampleIndices> }`,
+   `SampleIndices { name, index1, index2 }`. The probe-table parser lands with the
+   file itself (phase 4) rather than guessing at its columns.
 3. CLI/GUI plumbing for the paths comes in phase 7; this phase only parses.
 
 **Acceptance:** 96 rows parsed from the committed sheet; a test asserts that for

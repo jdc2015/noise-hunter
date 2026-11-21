@@ -13,6 +13,7 @@
 
 pub mod count;
 pub mod scan;
+pub mod tables;
 
 pub use count::{
     aggregate_hits, clean_sequence, compute_run_totals, count_file, count_sequence_across,
@@ -26,3 +27,4 @@ pub use scan::{
     is_read_file, list_directory_for_browse, output_path, results_dir, sample_name_from_path,
     DirectoryListing,
 };
+pub use tables::{SampleIndices, SampleSheet};
