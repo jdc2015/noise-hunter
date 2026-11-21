@@ -54,6 +54,13 @@ impl ReadAnatomy {
 /// not to the program, so it is supplied rather than assumed.
 pub fn anatomise(read: &str, indices: &SampleIndices, barcode: &str) -> Option<ReadAnatomy> {
     let cleaned = clean_sequence(read)?;
+    Some(anatomise_cleaned(&cleaned, indices, barcode))
+}
+
+/// The same measurement on a sequence that has already been cleaned, for callers
+/// that need the cleaned string anyway (the profile scans it for other samples'
+/// indices) and should not clean it twice.
+pub fn anatomise_cleaned(cleaned: &str, indices: &SampleIndices, barcode: &str) -> ReadAnatomy {
     let length = cleaned.len();
 
     let offset = |needle: &str| -> Option<usize> {
@@ -72,14 +79,14 @@ pub fn anatomise(read: &str, indices: &SampleIndices, barcode: &str) -> Option<R
         None
     };
 
-    Some(ReadAnatomy {
+    ReadAnatomy {
         barcode: offset(barcode),
         index1,
         index1_expected: index1 == Some(28),
         index2: offset(&indices.index2),
         poly_g_start,
         effective_len: poly_g_start.map_or(length, |start| start - 1),
-    })
+    }
 }
 
 #[cfg(test)]

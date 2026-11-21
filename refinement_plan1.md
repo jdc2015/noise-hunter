@@ -47,7 +47,7 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | 0 | Tables in the repo, parsers, fixtures | 1–2 h | done |
 | 1 | Read anatomy: one function, one struct | 2–3 h | done |
 | 2 | Per-sample noise profile + CSV | 2–3 h | done |
-| 3 | Index-aware counts (own/other/position) | 2–3 h | |
+| 3 | Index-aware counts (own/other/position) | 2–3 h | done |
 | 4 | Barcode check against the probe table | 1–2 h | |
 | 5 | Poly-G: effective length, optional trimming | 1–2 h | |
 | 6 | Cross-sample pattern search | 4–6 h | |
@@ -124,18 +124,23 @@ overwrites only after the GUI asks.
 
 **Goal:** per read, which indices it holds — its own, another sample's, both.
 
-1. Extend `ReadAnatomy` with `other_index1_hits: Vec<(String, usize)>` computed
-   against all sheet indices (bounded: only report the first three).
-2. Profile columns: `other_index1` (count of reads containing a *different*
-   sample's index1), `own_and_other` (reads with both), and a
-   `swapped_pair` count — only set when both indices are present in the read.
-3. Because index2 is absent from these 151-base reads, `swapped_pair` will read
-   `0` or `n/a`; report `n/a` rather than a false zero, and say why in the column
-   doc comment.
+1. The foreign scan lives in the profile, not in `ReadAnatomy`: anatomy is about
+   one read's own structure, while "another sample's index" needs the whole sheet.
+   A `HashMap` of the other samples' index1 8-mers makes each read one hash lookup
+   per window instead of one search per sample.
+2. Profile columns: `other_index1` (reads containing a different sample's index1),
+   `own_and_other` (reads with both), and `swapped_pair` — `Some(count)` only when
+   both indices appear, otherwise an empty field.
+3. Because index2 is absent from these 151-base reads, `swapped_pair` is `n/a`
+   rather than a false zero, and the column says so.
+4. The count is reported raw. An 8-mer occurs by chance about once per 65,536
+   windows, so the number is only interpretable beside an expectation — which the
+   pattern search reports, and which phase 6 could reuse here.
 
 **Acceptance:** sample1's own-index count equals 1,129; a fixture read containing
 another sample's index1 increments `other_index1`; `swapped_pair` is `n/a` when no
-read carries index2.
+read carries index2. Measured: 22 of sample1's reads carry a foreign index1, six
+of them alongside their own.
 
 ## Phase 4 — Barcode check
 

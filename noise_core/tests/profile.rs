@@ -59,7 +59,7 @@ fn every_sample_profiles_and_sample1_matches_the_hand_measurements() {
 
     println!(
         "sample1 reads={} barcode={} index1={} slot={} elsewhere={} index2={} \
-         both={} neither={} polyG={} median={}",
+         both={} neither={} other_index1={} own_and_other={} swapped={:?} polyG={} median={}",
         sample1.reads,
         sample1.barcode,
         sample1.index1,
@@ -68,6 +68,9 @@ fn every_sample_profiles_and_sample1_matches_the_hand_measurements() {
         sample1.index2,
         sample1.both_indices,
         sample1.neither_index,
+        sample1.other_index1,
+        sample1.own_and_other,
+        sample1.swapped_pair,
         sample1.poly_g,
         sample1.median_effective_len(),
     );
@@ -80,6 +83,9 @@ fn every_sample_profiles_and_sample1_matches_the_hand_measurements() {
     assert_eq!(sample1.index2, 0);
     assert_eq!(sample1.both_indices, 0);
     assert_eq!(sample1.neither_index, 115);
+    assert_eq!(sample1.other_index1, 22, "reads carrying another sample's index1");
+    assert_eq!(sample1.own_and_other, 6, "…of which also carry our own");
+    assert_eq!(sample1.swapped_pair, None, "no read holds both indices, so n/a");
     assert_eq!(sample1.poly_g, 1_134);
     // Half of sample1's reads carry no more than 65 bases of real sequence before
     // the G padding starts — the padding is not a fringe case, it is the norm.

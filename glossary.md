@@ -112,6 +112,10 @@ counts them, looking for the pattern in what failed.
   966 of 1,244 reads, sample2 1,692 of 2,119, sample8 337 of 914. On the
   anywhere-counts rule most reads in these files are index-positive: 1,129 of
   sample1's 1,244 contain index1, none contain index2, and 115 contain neither.
+  Twenty-two of them also contain **another** sample's index1, six of those
+  alongside their own. An 8-mer occurs by chance about once per 65,536 windows, so
+  a raw count like that needs an expectation beside it before it is read as
+  cross-contamination — which is why the pattern search reports one.
 - **Index pair / swapped pair** — a sample's two indices together identify it. In
   the sheet, for every `i` the partner sample `97 − i` lists the same two 8-mers
   in the **opposite order** (`sample48`/`sample49`, `sample1`/`sample96`), and all
