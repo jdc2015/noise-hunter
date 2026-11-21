@@ -13,6 +13,7 @@
 
 pub mod anatomy;
 pub mod count;
+pub mod profile;
 pub mod scan;
 pub mod tables;
 
@@ -30,3 +31,6 @@ pub use scan::{
     DirectoryListing,
 };
 pub use tables::{SampleIndices, SampleSheet};
+pub use profile::{
+    profile_file, profile_files, profile_text, write_profile, SampleProfile, PROFILE_FILE,
+};

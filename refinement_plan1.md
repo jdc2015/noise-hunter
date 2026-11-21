@@ -46,7 +46,7 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 |---|---|---|---|
 | 0 | Tables in the repo, parsers, fixtures | 1–2 h | done |
 | 1 | Read anatomy: one function, one struct | 2–3 h | done |
-| 2 | Per-sample noise profile + CSV | 2–3 h | |
+| 2 | Per-sample noise profile + CSV | 2–3 h | done |
 | 3 | Index-aware counts (own/other/position) | 2–3 h | |
 | 4 | Barcode check against the probe table | 1–2 h | |
 | 5 | Poly-G: effective length, optional trimming | 1–2 h | |
@@ -112,8 +112,9 @@ index1-at-28, 1,129 index1-anywhere, 1,134 poly-G, 888 barcode — and for sampl
 2. Writer: `noise_results/noise_profile.csv`, one row per sample, header
    `sample,reads,barcode,index1,index1_slot,index1_elsewhere,index2,both_indices,
    neither_index,poly_g,median_effective_len`.
-3. Wire it into the GUI's existing overwrite guard (`outputs_to_overwrite`), since
-   the name is fixed like the others.
+3. `PROFILE_FILE` is exported so the overwrite guard can name it; wiring it into
+   `outputs_to_overwrite` happens with the job itself in phase 7, since a guard
+   with nothing to guard is dead code.
 
 **Acceptance:** for the 96 samples the CSV's sample1 row equals the hand-measured
 numbers; the file is deterministic (browse order, fixed column order); a second run

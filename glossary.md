@@ -141,7 +141,9 @@ counts them, looking for the pattern in what failed.
   151. The G-run is padding, not sequence — the read's real content ends where it
   starts, and it can be trimmed or ignored. It is common here: 1,134 of sample1's
   1,244 reads, 1,998 of sample2's 2,119, 112 of sample96's 115. Nothing in this
-  code trims it; the reads are counted as they are.
+  code trims it; the reads are counted as they are. It is not a fringe case: the
+  median effective length in sample1 is **65 bases**, so half its reads carry no
+  more than 65 bases of real sequence.
 - **Background read** — a read that does not begin with the construct prefix
   (the majority of sample40: 1,150 of 1,436). Where these come from is **not yet
   known**, and they are not assumed to be contamination. Identifying and counting
