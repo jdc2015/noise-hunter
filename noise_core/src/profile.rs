@@ -19,6 +19,9 @@ use crate::tables::{SampleIndices, SampleSheet};
 /// The file [`write_profile`] writes, beside the count and search outputs.
 pub const PROFILE_FILE: &str = "noise_profile.csv";
 
+/// The effective-length histogram, one row per sample and length.
+pub const LENGTHS_FILE: &str = "effective_lengths.csv";
+
 /// What one sample's reads are made of. `reads` counts usable reads only: lines
 /// the counter would skip are not reads, so they are not profiled.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +83,11 @@ impl SampleProfile {
             }
         }
         0
+    }
+
+    /// Every effective length seen, with how many reads had it, shortest first.
+    pub fn length_histogram(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        self.lengths.iter().map(|(length, count)| (*length, *count))
     }
 }
 
@@ -265,6 +273,33 @@ pub fn write_profile(
     Ok(path)
 }
 
+/// Writes the effective-length histogram: one row per sample and length, shortest
+/// first. A sample with no reads contributes no rows.
+pub fn write_lengths(
+    profiles: &[SampleProfile],
+    results_dir: &Path,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(results_dir).map_err(|error| {
+        format!(
+            "Could not create results directory '{}': {error}",
+            results_dir.display()
+        )
+    })?;
+    let path = results_dir.join(LENGTHS_FILE);
+
+    let mut text = String::from("sample,effective_len,reads\n");
+    for profile in profiles {
+        for (length, reads) in profile.length_histogram() {
+            writeln!(text, "{},{length},{reads}", profile.sample_name)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    fs::write(&path, text)
+        .map_err(|error| format!("Could not write '{}': {error}", path.display()))?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +396,40 @@ mod tests {
         let profile = profile_text("", "sample1", &indices(), BARCODE, &sheet());
         assert_eq!(profile.reads, 0);
         assert_eq!(profile.median_effective_len(), 0);
+    }
+
+    #[test]
+    fn the_length_histogram_is_exact_and_ordered() {
+        let profile = profile_text(
+            &[
+                format!("{BARCODE}ATATGCGCATCT{POLY_G}"), // 39
+                format!("{BARCODE}ATATGCGCATCT"),         // 39
+                "ACGTACGTACGT".to_string(),               // 12
+            ]
+            .join("\n"),
+            "sample1",
+            &indices(),
+            BARCODE,
+            &sheet(),
+        );
+        let histogram: Vec<(usize, u64)> = profile.length_histogram().collect();
+        assert_eq!(histogram, vec![(12, 1), (39, 2)], "shortest first");
+
+        let dir = std::env::temp_dir().join(format!(
+            "noise_lengths_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let path = write_lengths(&[profile], &dir).expect("write");
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(
+            text,
+            "sample,effective_len,reads\nsample1,12,1\nsample1,39,2\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

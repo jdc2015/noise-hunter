@@ -32,5 +32,6 @@ pub use scan::{
 };
 pub use tables::{SampleIndices, SampleSheet};
 pub use profile::{
-    profile_file, profile_files, profile_text, write_profile, SampleProfile, PROFILE_FILE,
+    profile_file, profile_files, profile_text, write_lengths, write_profile, SampleProfile,
+    LENGTHS_FILE, PROFILE_FILE,
 };

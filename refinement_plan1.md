@@ -48,8 +48,8 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | 1 | Read anatomy: one function, one struct | 2–3 h | done |
 | 2 | Per-sample noise profile + CSV | 2–3 h | done |
 | 3 | Index-aware counts (own/other/position) | 2–3 h | done |
-| 4 | Barcode check against the probe table | 1–2 h | |
-| 5 | Poly-G: effective length, optional trimming | 1–2 h | |
+| 4 | Barcode check against the probe table | 1–2 h | blocked on probe_table.csv |
+| 5 | Poly-G: effective length, optional trimming | 1–2 h | 5a done, 5b pending |
 | 6 | Cross-sample pattern search | 4–6 h | |
 | 7 | Reporting + batch mode | 2–3 h | |
 | 8 | GUI surfaces; TUI if cheap | 3–4 h | |
@@ -142,35 +142,47 @@ another sample's index1 increments `other_index1`; `swapped_pair` is `n/a` when 
 read carries index2. Measured: 22 of sample1's reads carry a foreign index1, six
 of them alongside their own.
 
-## Phase 4 — Barcode check
+## Phase 4 — Barcode check (blocked)
 
 **Goal:** classify each read against the probe table.
 
 1. `ProbeTable` gives each variant's two 27-mers. New `BarcodeClass`:
    `ReadA | ReadB | Both | Neither`.
 2. Profile columns: `barcode_a`, `barcode_b`, `barcode_both`, `barcode_none`.
-   With the single barcode known today, `barcode_b` and `barcode_both` are zero
-   until the real probe table lands — the columns exist so the shape does not
-   change later.
+   The profile today counts a single known 27-mer in `barcode`; the four-way split
+   waits for the table rather than adding three columns that can only be zero.
 
-**Acceptance:** with `docs/probe_table.csv` absent, the profile still counts the
-single known 27-mer and reports the `readB` columns as `n/a` rather than zero; with
-a two-variant fixture, all four classes are produced correctly.
+**Status:** blocked on `docs/probe_table.csv`, which is supplied at the user's
+discretion. The parser will be written against the real file's columns, not a
+guess.
+
+**Acceptance when unblocked:** with the table absent, the profile still counts the
+single known 27-mer and the split columns are `n/a`; with a two-variant fixture,
+all four classes are produced correctly.
 
 ## Phase 5 — Poly-G handling
 
 **Goal:** make short reads visible and, optionally, countable as what they are.
 
-1. `effective_len` histogram per sample in the profile (phase 2 already carries
-   median; add the bucketed histogram to the CSV as extra rows or a second file —
-   decide at implementation, favouring one file with a `metric` column).
-2. `SearchOptions`/`CountOptions` gain `trim_poly_g: bool`, default `false`. When
-   on, the read is truncated at `poly_g_start` before counting.
-3. Never default-on: the golden guard proves default behaviour is untouched.
+### 5a — effective length (done)
 
-**Acceptance:** with trimming off, the golden hashes still match; with trimming on
-for sample1, the unique-sequence count drops in the direction the effective-length
-histogram predicts, and a fixture pins the exact number.
+1. The profile keeps an exact histogram of effective lengths, and
+   `write_lengths` emits `noise_results/effective_lengths.csv` —
+   `sample,effective_len,reads`, shortest first, no rows for an empty sample.
+   One tidy file rather than 96, and no mixed row types inside the profile table.
+2. sample1's median effective length is **65 bases**: half its reads carry no more
+   than that before the padding starts.
+
+### 5b — optional trimming (pending)
+
+1. `SearchOptions`/`CountOptions` gain `trim_poly_g: bool`, default `false`. When
+   on, the read is truncated at `poly_g_start` before counting.
+2. This touches both front ends and the output contract, so it lands as its own
+   change with the golden guard proving default behaviour is untouched.
+
+**Acceptance for 5b:** with trimming off, the golden hashes still match; with
+trimming on for sample1, the unique-sequence count drops in the direction the
+effective-length histogram predicts, and a fixture pins the exact number.
 
 ## Phase 6 — Cross-sample pattern search
 
@@ -263,6 +275,7 @@ not changed; the layout test is extended to the new tabs.
 | `noisecounts_<sample>.csv` | count job | unchanged, golden-guarded |
 | `sequencecount.csv` | search job | unchanged, golden-guarded |
 | `noise_profile.csv` | profile | new, fixed name, guarded |
+| `effective_lengths.csv` | profile | new, one row per sample and length |
 | `shared_kmers/shared_kmers.csv` | patterns | new, own folder, guarded |
 | `shared_kmers/run.txt` | patterns | the settings a ranking was produced under |
 
