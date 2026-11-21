@@ -50,8 +50,8 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | 3 | Index-aware counts (own/other/position) | 2–3 h | done |
 | 4 | Barcode check against the probe table | 1–2 h | blocked on probe_table.csv |
 | 5 | Poly-G: effective length, optional trimming | 1–2 h | 5a done, 5b pending |
-| 6 | Cross-sample pattern search | 4–6 h | done (core) |
-| 7 | Reporting + batch mode | 2–3 h | |
+| 6 | Cross-sample pattern search | 4–6 h | done |
+| 7 | Reporting + batch mode | 2–3 h | done |
 | 8 | GUI surfaces; TUI if cheap | 3–4 h | |
 | 9 | Docs, version 0.6.0, verification sweep | 1–2 h | |
 
@@ -215,9 +215,11 @@ G-rich padding boundaries, and nothing else. At `k = 12`, 35 shared, all explain
 the same way. The test pins that invariant, so a new unexplained universal pattern
 would fail it.
 
-**Follow-up this result argues for:** let a run exclude the known barcode and
-G-rich k-mers, so the table shows what remains. Without it, the first screen is
-the construct, not the noise.
+**Exclusions (done):** `shared_kmers_with` drops k-mers that are substrings of a
+barcode or that carry at least N `G`s, and reports how many it removed. With
+`--exclude-barcode --exclude-g-rich 8`, all 20 are removed and **nothing** is
+shared at k=20 — so the answer to "is there a universal noise 20-mer" is no, once
+the construct and the padding are taken out.
 
 **Acceptance:** over `counted_results` with `k = 20` and "present in all 96",
 the command completes in under 10 seconds in release and returns a ranked list; a
@@ -230,25 +232,23 @@ present and non-trivial.
 
 **Goal:** the whole thing runs without a window, over a folder, reproducibly.
 
-1. `noise_gui` keeps its GUI; add a small `noise_profile` binary or an
-   `--profile` flag on the GUI? Prefer a separate binary in `noise_gui`
-   (`noise_profile`) so the GUI binary keeps its single responsibility, and the
-   TUI is untouched.
-2. Flags: `--folder <path>`, `--sample-sheet <path>`, `--probe-table <path>`
-   (optional), `--samples <name,…>` (default: all files in the folder),
-   `--k <n>` (default 20), `--min-samples <n>` (default: all selected),
-   `--trim-poly-g`, `--force`.
-3. Writes `noise_profile.csv` and `shared_kmers/shared_kmers.csv` under the sibling
-   `noise_results/`; refuses to overwrite either without `--force`, matching the
-   GUI's guard.
-4. Performance: stream per file, do not hold all reads; the 96-sample set should
-   stay under a few seconds.
+1. A new crate, `noise_cli`, holding the `noise_profile` binary. The plan said a
+   bin in `noise_gui`; a command-line analysis should not link eframe, so it gets a
+   crate with one dependency (`noise_core`) and builds in seconds.
+2. Flags: `--folder`, `--sample-sheet`, `--samples a,b`, `--barcode <seq>`,
+   `--no-barcode`, `--k <n>` (default 20), `--exclude-barcode`,
+   `--exclude-g-rich <n>`, `--force`. The probe table and trimming are not wired
+   yet: phase 4 is blocked and 5b is its own change.
+3. Writes `noise_profile.csv`, `effective_lengths.csv` and
+   `shared_kmers/` under the sibling `noise_results/`; refuses to replace any of
+   them without `--force`, naming what it would replace.
+4. Performance: the 96-sample set profiles and searches in a couple of seconds.
 
-**Acceptance:** `cargo run --release -p noise_gui --bin noise_profile -- --folder
-counted_results --sample-sheet docs/sample_sheet.csv` writes both outputs; running
-it twice without `--force` refuses the second time; `--samples sample1,sample2`
-analyses exactly those two and `run.txt` names them; `--min-samples 96` reproduces
-the phase 6 answer.
+**Status:** done. The real run reports `profiled 96 samples (94 compared, 2 empty)`
+and writes all three outputs; the guard refuses a second run without `--force`.
+
+**Acceptance:** met — a second run is refused, `--samples` narrows the run, and
+`run.txt` records the command, `k`, exclusions and compared count.
 
 ## Phase 8 — UI surfaces
 

@@ -1,0 +1,15 @@
+[package]
+name = "noise_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless noise profile and shared-pattern search for unbinned reads"
+
+# Deliberately only the core: a command-line analysis has no business linking a
+# widget toolkit, which is why this is its own crate rather than a bin in noise_gui.
+[dependencies]
+noise_core = { workspace = true }
+
+[[bin]]
+name = "noise_profile"
+path = "src/main.rs"

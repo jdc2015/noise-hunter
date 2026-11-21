@@ -3,7 +3,7 @@
 # cargo (it warns and uses the root's).
 [workspace]
 resolver = "2"
-members = ["noise_core", "noise_counter", "noise_gui"]
+members = ["noise_core", "noise_counter", "noise_gui", "noise_cli"]
 
 [workspace.package]
 version = "0.5.0"

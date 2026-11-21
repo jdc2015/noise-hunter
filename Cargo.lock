@@ -2475,6 +2475,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
+name = "noise_cli"
+version = "0.5.0"
+dependencies = [
+ "noise_core",
+]
+
+[[package]]
 name = "noise_core"
 version = "0.5.0"
 dependencies = [

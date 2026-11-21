@@ -50,6 +50,45 @@ impl SharedKmer {
     }
 }
 
+/// How to search. `k` is the window; the exclusions remove sequences that are
+/// shared because they are the construct rather than because they are noise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternOptions {
+    pub k: usize,
+    /// Drop any k-mer that is a substring of this sequence — normally the
+    /// allele-locus barcode, which every construct read carries.
+    pub exclude_barcode: Option<String>,
+    /// Drop any k-mer with at least this many `G` bases — the padding boundary.
+    pub exclude_g_rich: Option<usize>,
+}
+
+impl PatternOptions {
+    pub fn new(k: usize) -> Self {
+        Self {
+            k,
+            exclude_barcode: None,
+            exclude_g_rich: None,
+        }
+    }
+
+    /// A one-line description for `run.txt`, so a result is always read against
+    /// the filters that produced it.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if self.exclude_barcode.is_some() {
+            parts.push("barcode".to_string());
+        }
+        if let Some(minimum) = self.exclude_g_rich {
+            parts.push(format!("g-rich>={minimum}"));
+        }
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
 /// The result of a pattern search.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PatternSearch {
@@ -58,11 +97,23 @@ pub struct PatternSearch {
     /// no reads (or none at least `k` long) cannot hold a pattern, so it is not
     /// required to: requiring it would let one empty sample erase every finding.
     pub samples_compared: usize,
+    /// How many shared k-mers the exclusion filters removed.
+    pub excluded: usize,
 }
 
-/// Every k-mer that appears at least once in **every comparable file**, ranked by
-/// total count (ties alphabetical). With one file this is that file's k-mers.
+/// Every k-mer that appears at least once in **every comparable file**, with no
+/// exclusions. See [`shared_kmers_with`] for the filtered form.
 pub fn shared_kmers(files: &[PathBuf], k: usize) -> Result<PatternSearch, String> {
+    shared_kmers_with(files, &PatternOptions::new(k))
+}
+
+/// The same search with exclusions applied to the shared set: a barcode substring
+/// match, a minimum `G` count, or both.
+pub fn shared_kmers_with(
+    files: &[PathBuf],
+    options: &PatternOptions,
+) -> Result<PatternSearch, String> {
+    let k = options.k;
     if files.is_empty() {
         return Err("no files to compare".to_string());
     }
@@ -92,16 +143,32 @@ pub fn shared_kmers(files: &[PathBuf], k: usize) -> Result<PatternSearch, String
         }
     }
 
-    let Some(candidates) = candidates else {
+    let Some(mut candidates) = candidates else {
         return Ok(PatternSearch {
             patterns: Vec::new(),
             samples_compared: 0,
+            excluded: 0,
         });
     };
+
+    // Filter before counting, so an excluded sequence costs nothing and cannot
+    // reach the output at all.
+    let before = candidates.len();
+    if let Some(barcode) = &options.exclude_barcode {
+        candidates.retain(|kmer| !barcode.contains(kmer.as_str()));
+    }
+    if let Some(minimum) = options.exclude_g_rich {
+        candidates.retain(|kmer| {
+            kmer.bytes().filter(|base| *base == b'G').count() < minimum
+        });
+    }
+    let excluded = before - candidates.len();
+
     if candidates.is_empty() {
         return Ok(PatternSearch {
             patterns: Vec::new(),
             samples_compared,
+            excluded,
         });
     }
 
@@ -165,6 +232,7 @@ pub fn shared_kmers(files: &[PathBuf], k: usize) -> Result<PatternSearch, String
     Ok(PatternSearch {
         patterns,
         samples_compared,
+        excluded,
     })
 }
 
@@ -212,7 +280,7 @@ fn kmer_probability(kmer: &str, bases: &[u64; 4]) -> f64 {
 pub fn write_shared_kmers(
     search: &PatternSearch,
     samples: &[String],
-    k: usize,
+    options: &PatternOptions,
     results_dir: &Path,
     command: &str,
 ) -> Result<PathBuf, String> {
@@ -255,7 +323,10 @@ pub fn write_shared_kmers(
         .map_err(|error| format!("Could not write the per-sample table: {error}"))?;
 
     let mut notes = format!(
-        "k={k}\nsamples_selected={}\nsamples_compared={}\nthreshold=all compared\nsamples={}\ncommand={command}\n",
+        "k={}\nexclusions={}\npatterns_excluded={}\nsamples_selected={}\nsamples_compared={}\nthreshold=all compared\nsamples={}\ncommand={command}\n",
+        options.k,
+        options.describe(),
+        search.excluded,
         samples.len(),
         search.samples_compared,
         samples.join(",")
@@ -403,9 +474,14 @@ mod tests {
         let search = shared_kmers(&files, SHARED.len()).expect("search");
         let samples = vec!["sample1".to_string(), "sample2".to_string(), "sample3".to_string()];
 
-        let folder =
-            write_shared_kmers(&search, &samples, SHARED.len(), &dir, "noise_profile --k 12")
-                .expect("write");
+        let folder = write_shared_kmers(
+            &search,
+            &samples,
+            &PatternOptions::new(SHARED.len()),
+            &dir,
+            "noise_profile --k 12",
+        )
+        .expect("write");
         assert_eq!(folder.file_name().and_then(|name| name.to_str()), Some(PATTERNS_DIR));
 
         let summary = fs::read_to_string(folder.join("shared_kmers.csv")).expect("summary");
@@ -421,9 +497,51 @@ mod tests {
 
         let notes = fs::read_to_string(folder.join("run.txt")).expect("run notes");
         assert!(notes.contains("k=12"), "{notes}");
+        assert!(notes.contains("exclusions=none"), "{notes}");
+        assert!(notes.contains("patterns_excluded=0"), "{notes}");
         assert!(notes.contains("samples_selected=3"), "{notes}");
         assert!(notes.contains("samples_compared=3"), "{notes}");
         assert!(notes.contains("noise_profile --k 12"), "{notes}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exclusions_remove_the_construct_and_the_padding() {
+        let dir = temp_dir("exclude");
+        let files = write_samples(&dir);
+        // A G-rich k-mer shared by every sample, standing in for padding.
+        let padding = "GGGGGGGGGGGG";
+        for (index, path) in files.iter().enumerate() {
+            let mut body = fs::read_to_string(path).expect("read sample");
+            // Valid bases only: a stray digit would make the line unreadable.
+            body.push_str(&format!("\n{padding}ACGT{}\n", "A".repeat(index + 1)));
+            fs::write(path, body).expect("rewrite sample");
+        }
+
+        let plain = shared_kmers(&files, SHARED.len()).expect("plain search");
+        assert!(plain.patterns.iter().any(|pattern| pattern.kmer == SHARED));
+        assert!(plain.patterns.iter().any(|pattern| pattern.kmer == padding));
+
+        let mut options = PatternOptions::new(SHARED.len());
+        options.exclude_barcode = Some(SHARED.to_string());
+        options.exclude_g_rich = Some(8);
+        let filtered = shared_kmers_with(&files, &options).expect("filtered search");
+
+        assert!(
+            !filtered.patterns.iter().any(|pattern| pattern.kmer == SHARED),
+            "the barcode substring is gone"
+        );
+        assert!(
+            !filtered.patterns.iter().any(|pattern| pattern.kmer == padding),
+            "the G-rich k-mer is gone"
+        );
+        assert_eq!(
+            filtered.excluded,
+            plain.patterns.len() - filtered.patterns.len(),
+            "the count of removed patterns is reported"
+        );
+        assert_eq!(options.describe(), "barcode, g-rich>=8");
 
         let _ = fs::remove_dir_all(&dir);
     }

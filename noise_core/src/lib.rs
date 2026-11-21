@@ -37,5 +37,6 @@ pub use profile::{
     LENGTHS_FILE, PROFILE_FILE,
 };
 pub use patterns::{
-    shared_kmers, write_shared_kmers, SharedKmer, PATTERNS_DIR,
+    shared_kmers, shared_kmers_with, write_shared_kmers, PatternOptions, PatternSearch,
+    SharedKmer, PATTERNS_DIR,
 };
