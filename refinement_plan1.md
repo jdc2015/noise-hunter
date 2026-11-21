@@ -50,7 +50,7 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | 3 | Index-aware counts (own/other/position) | 2–3 h | done |
 | 4 | Barcode check against the probe table | 1–2 h | blocked on probe_table.csv |
 | 5 | Poly-G: effective length, optional trimming | 1–2 h | 5a done, 5b pending |
-| 6 | Cross-sample pattern search | 4–6 h | |
+| 6 | Cross-sample pattern search | 4–6 h | done (core) |
 | 7 | Reporting + batch mode | 2–3 h | |
 | 8 | GUI surfaces; TUI if cheap | 3–4 h | |
 | 9 | Docs, version 0.6.0, verification sweep | 1–2 h | |
@@ -189,25 +189,35 @@ effective-length histogram predicts, and a fixture pins the exact number.
 **Goal:** the motivating example — a sequence pattern present across the selected
 samples, whether that is all 96, a subset, or one.
 
-1. `noise_core/src/patterns.rs`: `shared_kmers(files, k, opts) -> Vec<SharedPattern>`
-   where `SharedPattern { kmer, samples_present: usize, total: u64, per_sample: Vec<u64>, expected: f64 }`.
-   `files` is the selection, so "all samples" means all *selected* ones; with a
-   single file selected the result is that file's k-mer list, degenerate but well
-   defined.
-2. Compute per file in parallel (the job runner already does this), intersect by
-   k-mer hash, then rank.
+1. `noise_core/src/patterns.rs`: `shared_kmers(files, k) -> PatternSearch` where
+   `PatternSearch { patterns: Vec<SharedKmer>, samples_compared }` and
+   `SharedKmer { kmer, per_sample: Vec<u64>, expected: f64 }`. `files` is the
+   selection, so "all samples" means all *selected* ones; with a single file
+   selected the result is that file's k-mer list, degenerate but well defined.
+2. Intersect file by file, holding only the running candidate set — the memory cost
+   is one file's k-mers, not all of them. Rank by total count, ties alphabetical.
 3. `expected` from D5: the k-mer's expected count under each sample's mononucleotide
    frequencies; report `observed/expected`.
-4. Output **`noise_results/shared_kmers/shared_kmers.csv`** — a folder of its own,
-   because this is a cross-sample analysis rather than a per-run count. Header
-   `kmer,samples_present,samples_selected,total,observed_over_expected`, with
-   per-sample counts in long form (one row per k-mer per sample) unless `--wide`
-   asks for one column per sample.
-5. Write `noise_results/shared_kmers/run.txt` beside it: `k`, the threshold, the
-   selected samples in order, and the command line. A ranking is only meaningful
-   against the settings that produced it.
+4. A sample with no reads cannot hold a pattern, so it is not required to:
+   `samples_compared` records how many files were comparable, and an empty sample
+   cannot erase a finding. This was found by the first real run, not designed in.
+5. Output **`noise_results/shared_kmers/`**: `shared_kmers.csv` (header
+   `kmer,samples_present,samples_selected,samples_compared,total,expected,
+   observed_over_expected`), `shared_kmers_by_sample.csv`
+   (`kmer,sample,count`), and `run.txt` with `k`, the selection, the compared
+   count, the sample list and the command line.
 6. CLI/GUI surface is phase 8; phase 6 ships the core function and its writer,
    exercised by tests.
+
+**Status:** done (core). First real result: at `k = 20`, 20 k-mers are shared by
+all 94 comparable samples — eight fragments of the constant barcode and twelve
+G-rich padding boundaries, and nothing else. At `k = 12`, 35 shared, all explained
+the same way. The test pins that invariant, so a new unexplained universal pattern
+would fail it.
+
+**Follow-up this result argues for:** let a run exclude the known barcode and
+G-rich k-mers, so the table shows what remains. Without it, the first screen is
+the construct, not the noise.
 
 **Acceptance:** over `counted_results` with `k = 20` and "present in all 96",
 the command completes in under 10 seconds in release and returns a ranked list; a
@@ -277,6 +287,7 @@ not changed; the layout test is extended to the new tabs.
 | `noise_profile.csv` | profile | new, fixed name, guarded |
 | `effective_lengths.csv` | profile | new, one row per sample and length |
 | `shared_kmers/shared_kmers.csv` | patterns | new, own folder, guarded |
+| `shared_kmers/shared_kmers_by_sample.csv` | patterns | per-sample counts, long form |
 | `shared_kmers/run.txt` | patterns | the settings a ranking was produced under |
 
 ## Risks

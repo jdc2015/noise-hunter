@@ -238,6 +238,28 @@ counts them, looking for the pattern in what failed.
 | mismatch tolerance `d` | `sample,<SEQ>,within_<d>,best_mismatches` |
 | both | the union |
 
+## Shared patterns (job 3)
+
+- **k-mer** — a window of `k` consecutive bases. `k` is the user's choice (20 in the
+  default), deliberately arbitrary and not tied to the 27-base barcode: a k-mer may
+  contain part of the barcode, part of an index, or nothing recognisable.
+- **Shared pattern** — a k-mer present in every *comparable* sample. That is the
+  motivating find: one sample is a curiosity, all of them is a cause.
+- **Comparable sample** — a sample file holding at least one k-mer of length `k`.
+  An empty file cannot hold a pattern and is not required to: `sample57` and
+  `sample71` have no reads, so 94 of 96 are compared, and the output says so
+  rather than letting two empty files erase every finding.
+- **Observed/expected** — the count found divided by what a mononucleotide model
+  predicts from that sample's base composition. A G-rich artefact scores a few
+  tens; a designed sequence scores in the millions, because chance essentially
+  never produces it.
+- **First result** — at `k = 20`, exactly 20 k-mers are shared by all 94 comparable
+  samples: eight fragments of the constant barcode and twelve G-rich boundaries
+  into the padding. Nothing else is universal at that length. At `k = 12`, 35 are
+  shared, and all are barcode fragments or padding. So the answer to "is there a
+  noise pattern in every sample" is: not at these lengths — only the construct and
+  the padding.
+
 ## Output
 
 - **`noise_results/`** — the output folder, always a **sibling** of the input

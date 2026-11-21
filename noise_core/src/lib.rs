@@ -13,6 +13,7 @@
 
 pub mod anatomy;
 pub mod count;
+pub mod patterns;
 pub mod profile;
 pub mod scan;
 pub mod tables;
@@ -34,4 +35,7 @@ pub use tables::{SampleIndices, SampleSheet};
 pub use profile::{
     profile_file, profile_files, profile_text, write_lengths, write_profile, SampleProfile,
     LENGTHS_FILE, PROFILE_FILE,
+};
+pub use patterns::{
+    shared_kmers, write_shared_kmers, SharedKmer, PATTERNS_DIR,
 };
