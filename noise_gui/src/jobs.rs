@@ -12,9 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use noise_core::{
-    CountResult, RunTotals, SampleHit, SearchOptions, SequenceQueryResult, aggregate_hits,
-    compute_run_totals, count_file, sample_hit_from_scan, scan_sequence_in_file_with,
-    write_sequence_result,
+    CountResult, PatternOptions, PatternSearch, RunTotals, SampleHit, SampleProfile, SampleSheet,
+    SearchOptions, SequenceQueryResult, aggregate_hits, compute_run_totals, count_file,
+    profile_files, sample_hit_from_scan, sample_name_from_path, scan_sequence_in_file_with,
+    shared_kmers_with, write_lengths, write_profile, write_sequence_result, write_shared_kmers,
 };
 
 use crate::state::{PendingRun, SequenceRow, SEQUENCE_ROW_LIMIT};
@@ -45,6 +46,18 @@ pub enum JobEvent {
         source: PathBuf,
         rows: Vec<SequenceRow>,
         truncated: bool,
+    },
+    Profiled {
+        profiles: Vec<SampleProfile>,
+        written: Vec<PathBuf>,
+        elapsed: Duration,
+    },
+    PatternsFound {
+        search: PatternSearch,
+        samples: Vec<String>,
+        options: PatternOptions,
+        written: Vec<PathBuf>,
+        elapsed: Duration,
     },
     Error(String),
 }
@@ -111,6 +124,21 @@ impl JobRunner {
                         }
                     }
                 });
+            }
+            PendingRun::Profile {
+                files,
+                sheet,
+                barcode,
+                results_dir,
+            } => {
+                thread::spawn(move || run_profile(sender, files, sheet, barcode, results_dir));
+            }
+            PendingRun::Patterns {
+                files,
+                options,
+                results_dir,
+            } => {
+                thread::spawn(move || run_patterns(sender, files, options, results_dir));
             }
         }
     }
@@ -288,6 +316,83 @@ fn run_count(
         results,
         elapsed: started.elapsed(),
     });
+}
+
+/// Profiles every selected file and writes both profile tables.
+fn run_profile(
+    sender: Sender<JobEvent>,
+    files: Vec<PathBuf>,
+    sheet: SampleSheet,
+    barcode: String,
+    results_dir: PathBuf,
+) {
+    let started = Instant::now();
+    let profiles = match profile_files(&files, &sheet, &barcode) {
+        Ok(profiles) => profiles,
+        Err(message) => {
+            let _ = sender.send(JobEvent::Error(message));
+            return;
+        }
+    };
+
+    let mut written = Vec::new();
+    for result in [
+        write_profile(&profiles, &results_dir),
+        write_lengths(&profiles, &results_dir),
+    ] {
+        match result {
+            Ok(path) => written.push(path),
+            Err(message) => {
+                let _ = sender.send(JobEvent::Error(message));
+                return;
+            }
+        }
+    }
+
+    let _ = sender.send(JobEvent::Profiled {
+        profiles,
+        written,
+        elapsed: started.elapsed(),
+    });
+}
+
+/// Finds the k-mers shared by every selected sample and writes them.
+fn run_patterns(
+    sender: Sender<JobEvent>,
+    files: Vec<PathBuf>,
+    options: PatternOptions,
+    results_dir: PathBuf,
+) {
+    let started = Instant::now();
+    let search = match shared_kmers_with(&files, &options) {
+        Ok(search) => search,
+        Err(message) => {
+            let _ = sender.send(JobEvent::Error(message));
+            return;
+        }
+    };
+
+    let samples: Vec<String> = files
+        .iter()
+        .map(|path| sample_name_from_path(path))
+        .collect();
+    // The GUI's own command line, so run.txt records what produced the ranking.
+    let command = std::env::args().collect::<Vec<_>>().join(" ");
+
+    match write_shared_kmers(&search, &samples, &options, &results_dir, &command) {
+        Ok(folder) => {
+            let _ = sender.send(JobEvent::PatternsFound {
+                search,
+                samples,
+                options,
+                written: vec![folder],
+                elapsed: started.elapsed(),
+            });
+        }
+        Err(message) => {
+            let _ = sender.send(JobEvent::Error(message));
+        }
+    }
 }
 
 /// Reads a sample's `*_counts.csv` (header `sequence,counts,length`), stopping

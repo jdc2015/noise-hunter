@@ -8,10 +8,16 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use noise_core::{
-    CountResult, DirectoryListing, RunTotals, SampleHit, SearchOptions, SequenceQueryResult,
-    list_directory_for_browse, output_path, parse_length_filter, parse_target_sequence,
-    results_dir, sample_name_from_path,
+    CountResult, DirectoryListing, PatternOptions, PatternSearch, RunTotals, SampleHit,
+    SampleProfile, SampleSheet, SearchOptions, SequenceQueryResult, list_directory_for_browse,
+    output_path, parse_length_filter, parse_target_sequence, results_dir, sample_name_from_path,
+    LENGTHS_FILE, PATTERNS_DIR, PROFILE_FILE,
 };
+
+/// The allele-locus barcode in this sample set: the 27 bases the README's worked
+/// example counts. It belongs to the run rather than the program, so the GUI keeps
+/// it in one place that a future sheet or probe table can replace.
+pub const PROFILE_BARCODE: &str = "CACCAGACACGTCTGAACTCCAGTCAC";
 
 use crate::jobs::{JobEvent, JobId};
 
@@ -28,16 +34,26 @@ pub enum Tab {
     BrowseCount,
     Search,
     Results,
+    Profile,
+    Patterns,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::BrowseCount, Tab::Search, Tab::Results];
+    pub const ALL: [Tab; 5] = [
+        Tab::BrowseCount,
+        Tab::Search,
+        Tab::Results,
+        Tab::Profile,
+        Tab::Patterns,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::BrowseCount => "1  Browse & count",
             Tab::Search => "2  Search sequence",
             Tab::Results => "3  Results",
+            Tab::Profile => "4  Noise profile",
+            Tab::Patterns => "5  Shared patterns",
         }
     }
 }
@@ -80,6 +96,25 @@ pub enum SequenceSort {
     Sequence,
     Counts,
     Length,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ProfileSort {
+    Sample,
+    Reads,
+    Barcode,
+    Index1,
+    Index1Slot,
+    OtherIndex,
+    PolyG,
+    Median,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PatternSort {
+    Kmer,
+    Total,
+    ObservedOverExpected,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -153,6 +188,17 @@ pub enum PendingRun {
         options: SearchOptions,
         results_dir: PathBuf,
     },
+    Profile {
+        files: Vec<PathBuf>,
+        sheet: SampleSheet,
+        barcode: String,
+        results_dir: PathBuf,
+    },
+    Patterns {
+        files: Vec<PathBuf>,
+        options: PatternOptions,
+        results_dir: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -184,6 +230,9 @@ pub struct Actions {
     pub pick_folder: bool,
     pub export: Option<ExportKind>,
     pub open_sequence_file: Option<PathBuf>,
+    pub choose_sheet: bool,
+    pub run_profile: bool,
+    pub run_patterns: bool,
 }
 
 pub struct AppState {
@@ -230,6 +279,20 @@ pub struct AppState {
     pub sequence_truncated: bool,
     pub sequence_sort: SortState<SequenceSort>,
 
+    /// The upstream sheet, once chosen. The profile cannot run without it, so the
+    /// tab says so rather than silently counting nothing.
+    pub sheet: Option<SampleSheet>,
+    pub sheet_path: Option<PathBuf>,
+    pub profiles: Vec<SampleProfile>,
+    pub profile_sort: SortState<ProfileSort>,
+    pub patterns: Option<PatternSearch>,
+    /// Sample names, aligned with each pattern's per-sample counts.
+    pub pattern_samples: Vec<String>,
+    pub pattern_options: PatternOptions,
+    pub pattern_sort: SortState<PatternSort>,
+    /// Index into `patterns.patterns`, for the per-sample drill-down.
+    pub selected_pattern: Option<usize>,
+
     pub job: JobState,
     pub job_note: Option<String>,
     pub pending: Option<PendingRun>,
@@ -266,6 +329,15 @@ impl AppState {
             sequence_rows: Vec::new(),
             sequence_truncated: false,
             sequence_sort: SortState::new(SequenceSort::Counts),
+            sheet: None,
+            sheet_path: None,
+            profiles: Vec::new(),
+            profile_sort: SortState::ascending(ProfileSort::Sample),
+            patterns: None,
+            pattern_samples: Vec::new(),
+            pattern_options: PatternOptions::new(20),
+            pattern_sort: SortState::new(PatternSort::Total),
+            selected_pattern: None,
             job: JobState::Idle,
             job_note: None,
             pending: None,
@@ -545,6 +617,67 @@ impl AppState {
                     self.results_view = ResultsView::Sequences;
                     self.active_tab = Tab::Results;
                 }
+                JobEvent::Profiled {
+                    profiles,
+                    written,
+                    elapsed,
+                } => {
+                    let samples = profiles.len();
+                    let reads: u64 = profiles.iter().map(|profile| profile.reads).sum();
+                    self.info(format!(
+                        "Profiled {samples} sample{} ({reads} reads) in {:.2}s",
+                        if samples == 1 { "" } else { "s" },
+                        elapsed.as_secs_f64()
+                    ));
+                    self.profiles = profiles;
+                    self.profile_sort = SortState::ascending(ProfileSort::Sample);
+                    for path in &written {
+                        self.info(format!("Wrote {}", path.display()));
+                    }
+                    self.job = JobState::Finished {
+                        elapsed,
+                        files: samples,
+                    };
+                    self.active_tab = Tab::Profile;
+                }
+                JobEvent::PatternsFound {
+                    search,
+                    samples,
+                    options,
+                    written,
+                    elapsed,
+                } => {
+                    self.info(format!(
+                        "{} shared k-mer{} at k={} across {} sample{} in {:.2}s",
+                        search.patterns.len(),
+                        if search.patterns.len() == 1 { "" } else { "s" },
+                        options.k,
+                        search.samples_compared,
+                        if search.samples_compared == 1 { "" } else { "s" },
+                        elapsed.as_secs_f64()
+                    ));
+                    if search.excluded > 0 {
+                        self.info(format!(
+                            "{} shared k-mer{} excluded ({})",
+                            search.excluded,
+                            if search.excluded == 1 { "" } else { "s" },
+                            options.describe()
+                        ));
+                    }
+                    self.patterns = Some(search);
+                    self.pattern_samples = samples;
+                    self.pattern_options = options;
+                    self.selected_pattern = None;
+                    self.pattern_sort = SortState::new(PatternSort::Total);
+                    for path in &written {
+                        self.info(format!("Wrote {}", path.display()));
+                    }
+                    self.job = JobState::Finished {
+                        elapsed,
+                        files: self.pattern_samples.len(),
+                    };
+                    self.active_tab = Tab::Patterns;
+                }
                 JobEvent::Error(message) => self.error(message),
             }
         }
@@ -594,6 +727,43 @@ impl AppState {
         })
     }
 
+    /// Validates the profile form and builds the run, or reports what is wrong.
+    pub fn prepare_profile_run(&mut self) -> Option<PendingRun> {
+        let Some(sheet) = self.sheet.clone() else {
+            self.warn("Choose the sample sheet first — the profile needs the indices.");
+            return None;
+        };
+        let files = self.selected_files();
+        if files.is_empty() {
+            self.warn("No sample files selected.");
+            return None;
+        }
+        Some(PendingRun::Profile {
+            files,
+            sheet,
+            barcode: PROFILE_BARCODE.to_string(),
+            results_dir: self.results_dir(),
+        })
+    }
+
+    /// Validates the pattern form and builds the run.
+    pub fn prepare_patterns_run(&mut self) -> Option<PendingRun> {
+        if self.pattern_options.k == 0 {
+            self.warn("k must be at least 1.");
+            return None;
+        }
+        let files = self.selected_files();
+        if files.is_empty() {
+            self.warn("No sample files selected.");
+            return None;
+        }
+        Some(PendingRun::Patterns {
+            files,
+            options: self.pattern_options.clone(),
+            results_dir: self.results_dir(),
+        })
+    }
+
     /// Outputs a run would overwrite. The TUI has always reused fixed names, so
     /// the guard exists because that behaviour was never safe, not because the
     /// GUI changed it.
@@ -612,6 +782,20 @@ impl AppState {
                 // `aggregate_hits` always points the combined result at this
                 // fixed name, which is why the guard is needed at all.
                 let out = results_dir.join("sequencecount.csv");
+                if out.exists() {
+                    existing.push(out);
+                }
+            }
+            PendingRun::Profile { results_dir, .. } => {
+                for name in [PROFILE_FILE, LENGTHS_FILE] {
+                    let out = results_dir.join(name);
+                    if out.exists() {
+                        existing.push(out);
+                    }
+                }
+            }
+            PendingRun::Patterns { results_dir, .. } => {
+                let out = results_dir.join(PATTERNS_DIR);
                 if out.exists() {
                     existing.push(out);
                 }
@@ -700,8 +884,7 @@ impl AppState {
     }
 
     /// The sequence browser rows in the order the table shows them.
-    pub fn sorted_sequences(&self) -> Vec<usize> {
-        let mut order: Vec<usize> = (0..self.sequence_rows.len()).collect();
+    pub fn sorted_sequences(&self) -> Vec<usize> {        let mut order: Vec<usize> = (0..self.sequence_rows.len()).collect();
         let descending = self.sequence_sort.descending;
         order.sort_by(|a, b| {
             let left = &self.sequence_rows[*a];
@@ -717,6 +900,63 @@ impl AppState {
                 ordering
             };
             ordering.then_with(|| left.sequence.cmp(&right.sequence))
+        });
+        order
+    }
+
+    /// The profile rows in the order the table shows them.
+    pub fn sorted_profiles(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.profiles.len()).collect();
+        let descending = self.profile_sort.descending;
+        order.sort_by(|a, b| {
+            let left = &self.profiles[*a];
+            let right = &self.profiles[*b];
+            let ordering = match self.profile_sort.column {
+                ProfileSort::Sample => left.sample_name.cmp(&right.sample_name),
+                ProfileSort::Reads => left.reads.cmp(&right.reads),
+                ProfileSort::Barcode => left.barcode.cmp(&right.barcode),
+                ProfileSort::Index1 => left.index1.cmp(&right.index1),
+                ProfileSort::Index1Slot => left.index1_slot.cmp(&right.index1_slot),
+                ProfileSort::OtherIndex => left.other_index1.cmp(&right.other_index1),
+                ProfileSort::PolyG => left.poly_g.cmp(&right.poly_g),
+                ProfileSort::Median => {
+                    left.median_effective_len().cmp(&right.median_effective_len())
+                }
+            };
+            let ordering = if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            };
+            ordering.then_with(|| left.sample_name.cmp(&right.sample_name))
+        });
+        order
+    }
+
+    /// The shared patterns in the order the table shows them.
+    pub fn sorted_patterns(&self) -> Vec<usize> {
+        let Some(search) = &self.patterns else {
+            return Vec::new();
+        };
+        let mut order: Vec<usize> = (0..search.patterns.len()).collect();
+        let descending = self.pattern_sort.descending;
+        order.sort_by(|a, b| {
+            let left = &search.patterns[*a];
+            let right = &search.patterns[*b];
+            let ordering = match self.pattern_sort.column {
+                PatternSort::Kmer => left.kmer.cmp(&right.kmer),
+                PatternSort::Total => left.total().cmp(&right.total()),
+                PatternSort::ObservedOverExpected => left
+                    .observed_over_expected()
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&right.observed_over_expected().unwrap_or(f64::INFINITY)),
+            };
+            let ordering = if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            };
+            ordering.then_with(|| left.kmer.cmp(&right.kmer))
         });
         order
     }

@@ -4,6 +4,8 @@ use egui::{Color32, Response, Ui};
 
 pub mod browse;
 pub mod charts;
+pub mod patterns;
+pub mod profile;
 pub mod results;
 pub mod search;
 
@@ -121,7 +123,7 @@ pub fn footer(ui: &mut Ui, state: &mut AppState) {
         if state.messages.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Ctrl+O folder  ·  Ctrl+R run  ·  Ctrl+F filter  ·  1/2/3 tabs  ·  R refresh  ·  Esc clear",
+                    "Ctrl+O folder  ·  Ctrl+R run  ·  Ctrl+F filter  ·  1–5 tabs  ·  R refresh  ·  Esc clear",
                 )
                 .small()
                 .color(MUTED),

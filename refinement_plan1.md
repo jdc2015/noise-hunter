@@ -52,8 +52,8 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | 5 | Poly-G: effective length, optional trimming | 1–2 h | 5a done, 5b pending |
 | 6 | Cross-sample pattern search | 4–6 h | done |
 | 7 | Reporting + batch mode | 2–3 h | done |
-| 8 | GUI surfaces; TUI if cheap | 3–4 h | |
-| 9 | Docs, version 0.6.0, verification sweep | 1–2 h | |
+| 8 | GUI surfaces; TUI if cheap | 3–4 h | done |
+| 9 | Docs, version 0.6.0, verification sweep | 1–2 h | done |
 
 Dependencies: 0 → 1 → {2, 3, 4, 5} → 6 → 7 → 8 → 9. Phases 3–5 are independent of
 each other and can be reordered.
@@ -254,19 +254,29 @@ and writes all three outputs; the guard refuses a second run without `--force`.
 
 **Goal:** the profile and the shared patterns are visible, not just on disk.
 
-1. New GUI tab **Noise profile**: the per-sample table (sortable, filterable,
-   reusing `TableBuilder`), with the class counts as columns.
-2. New GUI tab or section **Shared patterns**: the ranked k-mer list, with a bar
-   chart of `samples_present` and a drill-down showing per-sample counts.
-3. Charts: effective-length histogram per sample; class composition.
-4. TUI: only if cheap — a single screen showing the profile for the highlighted
-   sample, produced from the same core call. Not a requirement of this phase.
-5. Keep the tab 3 layout lesson: charts inside a bounded, scrollable region with a
-   reserve for the table (the layout test already enforces this pattern).
+1. New GUI tab **4 Noise profile**: a sample-sheet picker, `Profile selected`, and
+   the per-sample table (sortable by every column, reusing `TableBuilder`). A
+   sample with no reads says so instead of showing a blank row.
+2. New GUI tab **5 Shared patterns**: `k`, the two exclusions, `Find shared
+   patterns`, the ranked k-mer table, and a drill-down listing a selected k-mer's
+   count in each sample.
+3. No bar chart of `samples_present`: every returned pattern has the same
+   `samples_present` by definition, so the chart would be a row of equal bars. The
+   table sorted by total or by observed/expected is the useful view.
+4. `k` and the exclusions do **not** re-run the search as you edit them: a search
+   takes about a second over 96 samples, so it is a button, like the mismatch
+   slider in the search tab.
+5. The drill-down sits under the table, so the table gives it a reserve — the same
+   lesson as the charts, one tab over, enforced by the layout test.
+6. TUI: not touched. The profile and patterns are GUI and CLI features; adding a
+   screen to the TUI would duplicate them for no gain.
 
-**Acceptance:** the profile table matches the CSV row for row; the shared-pattern
-view updates when `k` or the threshold changes without re-reading files that have
-not changed; the layout test is extended to the new tabs.
+**Status:** done. The layout test now covers tabs 3, 4 and 5 at both the default
+and minimum window sizes, with the drill-down open.
+
+**Acceptance:** met, with one deliberate change — the shared-pattern view does not
+live-update on `k`, it runs on request. The profile table is built from the same
+`SampleProfile` values that were written to the CSV, so the two cannot disagree.
 
 ## Phase 9 — Docs and verification
 
@@ -277,6 +287,10 @@ not changed; the layout test is extended to the new tabs.
 3. Version `0.6.0` in the workspace, `APP_VERSION` in step.
 4. Full sweep: `cargo test --release --workspace`, both `#[ignore]` golden guards,
    TUI smoke through a pty, GUI launch, and the new CLI on `counted_results`.
+
+**Status:** done. README documents the profile, the pattern search and the CLI;
+the glossary gained the profile terms; the workspace is 0.6.0 with `APP_VERSION`
+in step; the sweep is recorded in the commit that closed the plan.
 
 ## Output files after this plan
 

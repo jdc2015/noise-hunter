@@ -260,6 +260,23 @@ counts them, looking for the pattern in what failed.
   noise pattern in every sample" is: not at these lengths — only the construct and
   the padding.
 
+## The noise profile
+
+- **Noise profile** — one row per sample summarising its reads by class, written to
+  `noise_results/noise_profile.csv`.
+- **Effective length** — the bases before the trailing `G` padding starts. A
+  151-base read ending in 80 `G`s has an effective length of 71.
+- **Index-positive** — a read containing index1 or index2 anywhere. Under the
+  anywhere rule this is the common state of an unbinned read: 1,129 of sample1's
+  1,244.
+- **Foreign index** — another sample's index1 found in a read: 22 in sample1, six
+  of them alongside its own. An 8-mer matches by chance often enough that the raw
+  count needs an expectation before it means cross-contamination.
+- **Median effective length** — the lower middle value. It is 65 bases for
+  sample1, so half its reads carry no more than 65 bases of real sequence.
+- **No reads** — a sample whose unbinned file is empty (`sample57`, `sample71`).
+  Its profile row is zeros and it is not required to hold a shared pattern.
+
 ## Output
 
 - **`noise_results/`** — the output folder, always a **sibling** of the input

@@ -57,6 +57,17 @@ impl NoiseApp {
                 if options.reverse_complement { "s" } else { "" },
                 options.max_mismatches
             ),
+            PendingRun::Profile { files, .. } => format!(
+                "Profiling {} sample file{}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            ),
+            PendingRun::Patterns { files, options, .. } => format!(
+                "Comparing {} sample{} at k={}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" },
+                options.k
+            ),
         };
         self.jobs.start(run);
         self.state.job = JobState::Running { done: 0, total: 0 };
@@ -97,23 +108,59 @@ impl NoiseApp {
         self.state.open_folder(&path, true);
     }
 
+    /// Chooses and parses the upstream sample sheet. The profile needs it, and a
+    /// parse error is reported in-window rather than silently leaving the tab
+    /// without indices.
+    fn choose_sheet(&mut self) {
+        let start = self
+            .state
+            .sheet_path
+            .clone()
+            .unwrap_or_else(|| self.state.input_folder.clone());
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose the sample sheet")
+            .add_filter("CSV", &["csv"])
+            .set_directory(&start)
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match noise_core::SampleSheet::parse(&text) {
+                Ok(sheet) => {
+                    self.state
+                        .info(format!("Sample sheet: {} samples", sheet.len()));
+                    self.state.sheet = Some(sheet);
+                    self.state.sheet_path = Some(path);
+                }
+                Err(message) => self.state.error(message),
+            },
+            Err(error) => self
+                .state
+                .error(format!("Could not read '{}': {error}", path.display())),
+        }
+    }
+
     /// The keyboard table. Ctrl shortcuts work even from a text field — they are
     /// what you reach for mid-typing — while bare keys belong to whatever has
     /// focus, so typing "1" in the query field is a digit, not a tab change.
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let (open, run, find, refresh, one, two, three, esc) = ctx.input(|input| {
-            let cmd = input.modifiers.command;
-            (
-                cmd && input.key_pressed(egui::Key::O),
-                cmd && input.key_pressed(egui::Key::R),
-                cmd && input.key_pressed(egui::Key::F),
-                input.key_pressed(egui::Key::R),
-                input.key_pressed(egui::Key::Num1),
-                input.key_pressed(egui::Key::Num2),
-                input.key_pressed(egui::Key::Num3),
-                input.key_pressed(egui::Key::Escape),
-            )
-        });
+        let (open, run, find, refresh, one, two, three, four, five, esc) =
+            ctx.input(|input| {
+                let cmd = input.modifiers.command;
+                (
+                    cmd && input.key_pressed(egui::Key::O),
+                    cmd && input.key_pressed(egui::Key::R),
+                    cmd && input.key_pressed(egui::Key::F),
+                    input.key_pressed(egui::Key::R),
+                    input.key_pressed(egui::Key::Num1),
+                    input.key_pressed(egui::Key::Num2),
+                    input.key_pressed(egui::Key::Num3),
+                    input.key_pressed(egui::Key::Num4),
+                    input.key_pressed(egui::Key::Num5),
+                    input.key_pressed(egui::Key::Escape),
+                )
+            });
 
         if open {
             self.pick_folder();
@@ -155,6 +202,10 @@ impl NoiseApp {
             self.state.active_tab = Tab::Search;
         } else if three {
             self.state.active_tab = Tab::Results;
+        } else if four {
+            self.state.active_tab = Tab::Profile;
+        } else if five {
+            self.state.active_tab = Tab::Patterns;
         }
     }
 
@@ -165,17 +216,15 @@ impl NoiseApp {
         if self.state.job.is_running() {
             return;
         }
-        let kind = match self.state.active_tab {
-            Tab::BrowseCount => RunKind::Count,
-            Tab::Search => RunKind::Search,
+        let run = match self.state.active_tab {
+            Tab::BrowseCount => self.state.prepare_count_run(),
+            Tab::Search => self.state.prepare_search_run(),
             Tab::Results => match self.state.results_view {
-                ResultsView::Counts => RunKind::Count,
-                ResultsView::Live | ResultsView::Sequences => RunKind::Search,
+                ResultsView::Counts => self.state.prepare_count_run(),
+                ResultsView::Live | ResultsView::Sequences => self.state.prepare_search_run(),
             },
-        };
-        let run = match kind {
-            RunKind::Count => self.state.prepare_count_run(),
-            RunKind::Search => self.state.prepare_search_run(),
+            Tab::Profile => self.state.prepare_profile_run(),
+            Tab::Patterns => self.state.prepare_patterns_run(),
         };
         if let Some(run) = run {
             self.launch(run);
@@ -242,10 +291,25 @@ impl eframe::App for NoiseApp {
             Tab::BrowseCount => ui::browse::browse_tab(ui, &mut self.state, &mut actions),
             Tab::Search => ui::search::search_tab(ui, &mut self.state, &mut actions),
             Tab::Results => ui::results::results_tab(ui, &mut self.state, &mut actions),
+            Tab::Profile => ui::profile::profile_tab(ui, &mut self.state, &mut actions),
+            Tab::Patterns => ui::patterns::patterns_tab(ui, &mut self.state, &mut actions),
         });
 
         if actions.pick_folder {
             self.pick_folder();
+        }
+        if actions.choose_sheet {
+            self.choose_sheet();
+        }
+        if actions.run_profile {
+            if let Some(run) = self.state.prepare_profile_run() {
+                self.launch(run);
+            }
+        }
+        if actions.run_patterns {
+            if let Some(run) = self.state.prepare_patterns_run() {
+                self.launch(run);
+            }
         }
         if let Some(kind) = actions.export {
             self.export(kind);

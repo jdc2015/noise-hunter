@@ -1,18 +1,20 @@
-//! Layout guard for the Results tab.
+//! Layout guard for the tabs that hold tables.
 //!
-//! Three charts plus a table used to overflow the central panel: the charts are
-//! fixed-height plots, so on a normal window the table was laid out past the
-//! bottom edge and clipped away. This runs the real tab layout headlessly and
-//! fails if its content spills out of the panel it was given.
+//! Fixed-height charts and long tables used to overflow the central panel: on a
+//! normal window the table was laid out past the bottom edge and clipped. This
+//! runs the real tab layouts headlessly and fails if their content spills out of
+//! the panel they were given.
 
 use std::path::PathBuf;
 
-use noise_core::{CountResult, RunTotals, SampleHit, SearchOptions, SequenceQueryResult};
+use noise_core::{
+    CountResult, PatternOptions, PatternSearch, RunTotals, SampleHit, SampleIndices, SampleSheet,
+    SearchOptions, SequenceQueryResult, SharedKmer,
+};
 use noise_gui::state::{Actions, AppState, ResultsView, Tab};
 use noise_gui::ui;
 
-/// The end state of using both jobs: a count run and a live query, so every
-/// chart is drawn.
+/// The end state of using the counting and search jobs: every chart is drawn.
 fn state_with_every_result() -> AppState {
     let mut state = AppState::new();
     state.active_tab = Tab::Results;
@@ -65,11 +67,75 @@ fn state_with_every_result() -> AppState {
     state
 }
 
-/// Runs the tab the way the window does — same panels, same order — and returns
+fn sheet() -> SampleSheet {
+    SampleSheet::parse("sample1,ATATGCGC,CTGATCGT\nsample2,AGAACGAG,CGGCTAAT\n")
+        .expect("test sheet")
+}
+
+/// A finished profile run over two samples, one of them empty.
+fn state_with_profile() -> AppState {
+    let mut state = AppState::new();
+    state.active_tab = Tab::Profile;
+    state.sheet = Some(sheet());
+    state.sheet_path = Some(PathBuf::from("/repo/docs/sample_sheet.csv"));
+    state.profiles = vec![
+        noise_core::profile_text(
+            "CACCAGACACGTCTGAACTCCAGTCACATATGCGCATCTGGGGGGGGGGGG\nACGTACGTACGT\n",
+            "sample1",
+            &SampleIndices {
+                name: "sample1".to_string(),
+                index1: "ATATGCGC".to_string(),
+                index2: "CTGATCGT".to_string(),
+            },
+            "CACCAGACACGTCTGAACTCCAGTCAC",
+            &sheet(),
+        ),
+        noise_core::profile_text(
+            "",
+            "sample2",
+            &SampleIndices {
+                name: "sample2".to_string(),
+                index1: "AGAACGAG".to_string(),
+                index2: "CGGCTAAT".to_string(),
+            },
+            "CACCAGACACGTCTGAACTCCAGTCAC",
+            &sheet(),
+        ),
+    ];
+    state
+}
+
+/// A finished pattern search, with one row selected so the drill-down is drawn.
+fn state_with_patterns() -> AppState {
+    let mut state = AppState::new();
+    state.active_tab = Tab::Patterns;
+    state.pattern_options = PatternOptions::new(12);
+    state.pattern_samples = vec!["sample1".to_string(), "sample2".to_string()];
+    state.patterns = Some(PatternSearch {
+        patterns: (0..20)
+            .map(|index| SharedKmer {
+                kmer: format!("ACGTTGCAAGGC{}", index % 10),
+                per_sample: vec![10 + index, 5 + index],
+                expected: 0.001 * (index + 1) as f64,
+            })
+            .collect(),
+        samples_compared: 2,
+        excluded: 3,
+    });
+    state.selected_pattern = Some(0);
+    state
+}
+
+/// Runs one tab the way the window does — same panels, same order — and returns
 /// how far the content reached past the bottom of the central panel.
-fn overflow_px(width: f32, height: f32) -> f32 {
-    let ctx = egui::Context::default();
-    let mut state = state_with_every_result();
+fn overflow_px(width: f32, height: f32, tab: Tab) -> f32 {
+    let mut state = match tab {
+        Tab::Results => state_with_every_result(),
+        Tab::Profile => state_with_profile(),
+        Tab::Patterns => state_with_patterns(),
+        _ => state_with_every_result(),
+    };
+    state.active_tab = tab;
     let mut actions = Actions::default();
     let mut input = egui::RawInput::default();
     input.screen_rect = Some(egui::Rect::from_min_size(
@@ -78,13 +144,18 @@ fn overflow_px(width: f32, height: f32) -> f32 {
     ));
 
     let mut overflow = f32::NEG_INFINITY;
-    let mut output = ctx.run_ui(input, |ui| {
+    let mut output = ctx_run(input, |ui| {
         egui::Panel::top("status").show(ui, |ui| ui::status_bar(ui, &mut state));
         egui::Panel::top("tabs").show(ui, |ui| ui::tab_bar(ui, &mut state));
         egui::Panel::bottom("footer").show(ui, |ui| ui::footer(ui, &mut state));
         egui::CentralPanel::default().show(ui, |ui| {
             let bottom = ui.max_rect().bottom();
-            ui::results::results_tab(ui, &mut state, &mut actions);
+            match tab {
+                Tab::Results => ui::results::results_tab(ui, &mut state, &mut actions),
+                Tab::Profile => ui::profile::profile_tab(ui, &mut state, &mut actions),
+                Tab::Patterns => ui::patterns::patterns_tab(ui, &mut state, &mut actions),
+                _ => {}
+            }
             overflow = ui.min_rect().bottom() - bottom;
         });
     });
@@ -93,15 +164,24 @@ fn overflow_px(width: f32, height: f32) -> f32 {
     overflow
 }
 
+fn ctx_run(
+    input: egui::RawInput,
+    run: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    egui::Context::default().run_ui(input, run)
+}
+
 #[test]
-fn the_results_tab_fits_the_window_with_every_chart_open() {
+fn every_table_tab_fits_the_window() {
     // The default window, and the smallest one the app allows.
     for (width, height) in [(1220.0, 780.0), (880.0, 520.0)] {
-        let overflow = overflow_px(width, height);
-        assert!(
-            overflow <= 1.0,
-            "Results tab overflows a {width}x{height} window by {overflow:.0} px — \
-             the table would be clipped"
-        );
+        for tab in [Tab::Results, Tab::Profile, Tab::Patterns] {
+            let overflow = overflow_px(width, height, tab);
+            assert!(
+                overflow <= 1.0,
+                "{tab:?} overflows a {width}x{height} window by {overflow:.0} px — \
+                 the table would be clipped"
+            );
+        }
     }
 }

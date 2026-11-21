@@ -1,6 +1,6 @@
 # noise-hunter
 
-**v0.5.0** — count identical DNA sequences in plain-text read files, and count how
+**v0.6.0** — count identical DNA sequences in plain-text read files, and count how
 many reads contain a sequence you type. Two front ends over one core:
 
 | Crate | What it is |
@@ -22,6 +22,10 @@ against a checksum manifest, not merely intended.
 ```bash
 cargo run --release -p noise_counter                  # terminal UI
 cargo run --release -p noise_gui -- --folder counted_results   # GUI
+
+# headless: profile every sample and find the k-mers they share
+cargo run --release -p noise_cli --bin noise_profile -- \
+    --folder counted_results --sample-sheet docs/sample_sheet.csv
 ```
 
 ## The output contract
@@ -104,6 +108,39 @@ never moves the numbers in the first two columns.
 Mismatch searching costs O(reads × query length) per file, which is why the GUI
 only runs it on an explicit Run.
 
+## Noise profile
+
+`noise_results/noise_profile.csv` has one row per sample: usable reads, reads
+carrying the 27-base allele-locus barcode, reads containing index1 (and how many
+sit in its usual base-28 slot), reads containing **another** sample's index1, reads
+ending in G padding, and the median effective read length. `effective_lengths.csv`
+holds the exact length histogram per sample.
+
+It needs the sample sheet — the indices belong to the run, not to the program —
+and a sample with no reads contributes a row of zeros rather than being skipped
+(`sample57` and `sample71` are empty).
+
+## Shared patterns
+
+A **k-mer** present in every compared sample. The search writes
+`noise_results/shared_kmers/`: `shared_kmers.csv` (ranked), 
+`shared_kmers_by_sample.csv` (per-sample counts) and `run.txt` (k, exclusions,
+selection, command line).
+
+- `k` is arbitrary and chosen by you. It is not tied to the barcode: a shared
+  k-mer may contain part of the barcode, part of an index, or nothing
+  recognisable.
+- **Observed/expected** comes from a mononucleotide model, so a designed sequence
+  scores in the millions and a G-rich artefact in the tens.
+- A sample with no reads cannot hold a pattern and is not required to;
+  `samples_compared` says how many were compared.
+- Exclusions remove what is shared because it is the construct rather than the
+  noise: `--exclude-barcode` and `--exclude-g-rich <n>`.
+
+First result on this sample set: at `k = 20`, 20 k-mers are shared by all 94
+comparable samples — eight fragments of the barcode and twelve G-rich padding
+boundaries. Excluding both leaves **nothing** shared at that length.
+
 ## Desktop GUI (`noise_gui`)
 
 Three tabs, driven with a mouse — every job also starts from the keyboard.
@@ -142,6 +179,14 @@ Before any run that would replace existing output, the GUI lists the files it
 would overwrite and waits for confirmation — the fixed names make this necessary,
 and it is the one place the GUI deliberately differs from the TUI.
 
+**4 Noise profile.** Choose the sample sheet, then `Profile selected`: the
+per-sample table described above, sortable by any column. A sample with no reads
+shows `no reads` instead of a blank row.
+
+**5 Shared patterns.** Set `k`, optionally exclude the barcode or G-rich k-mers,
+then `Find shared patterns`. The table ranks what every compared sample holds;
+clicking a k-mer lists its count in each sample underneath.
+
 Shortcuts: `Ctrl+O` folder · `Ctrl+R` run (the job the current tab is about) ·
 `Ctrl+F` filter · `1`/`2`/`3` tabs · `R` refresh live counts · `Esc` cancel a
 dialog, else clear the selection, else clear the messages.
@@ -176,30 +221,40 @@ core supports both, and the GUI exposes them.
 
 ```
 noise-hunter/
-├── Cargo.toml                  # workspace: noise_core, noise_counter, noise_gui
+├── Cargo.toml                  # workspace: noise_core, noise_counter, noise_gui, noise_cli
 ├── baseline.sha256             # 193 checksums of v0.4.0 output, the regression guard
 ├── counted_results/            # sample data: 96 sample pairs
 │   ├── sampleN_unbinned_reads      # one sequence per line  <- input
 │   └── sampleN_binned_results.csv  # not read by this program
+├── docs/
+│   └── sample_sheet.csv        # the 96-sample dual-index sheet
 ├── noise_results/              # output folder (created next to the input folder)
-├── noise_core/                 # counting logic, std-only
+├── noise_core/                 # counting, profile and pattern logic, std-only
 ├── noise_counter/              # terminal UI
-└── noise_gui/                  # desktop GUI
+├── noise_gui/                  # desktop GUI
+└── noise_cli/                  # headless noise_profile binary
 ```
 
 ## Tests and verification
 
 ```bash
-cargo test --release --workspace                    # 30 core + 9 GUI tests
+cargo test --release --workspace                    # 59 core + 9 GUI + layout tests
 cargo test --release -p noise_core -- --ignored     # 193 CSVs vs baseline.sha256
 cargo test --release -p noise_gui  -- --ignored     # the same, through the GUI's parallel path
+cargo test --release -p noise_core --test anatomy --test profile --test patterns -- --ignored
 ```
 
 The unit tests cover sequence cleaning, the length filter, CSV ordering, the
 combined search CSV and its option-dependent headers, closest-match diagnostics,
-and file discovery/sorting; the GUI tests drive its worker thread and assert its
-output matches the core's byte for byte. They create their own temporary folders,
-so `counted_results/` is not needed.
+file discovery and sorting, the sample sheet, read anatomy, the noise profile and
+the pattern search; the GUI tests drive its worker thread and assert its output
+matches the core's byte for byte. They create their own temporary folders, so
+`counted_results/` is not needed.
+
+The ignored guards are the real-data checks: the two golden tests re-run both
+counting jobs over all 96 samples and compare every CSV against `baseline.sha256`;
+the anatomy, profile and pattern tests pin the measured numbers (888 barcode,
+1,129 index1, 1,134 poly-G in sample1; 20 shared 20-mers, all barcode or padding).
 
 The two `#[ignore]`d tests are the real regression guard: they re-run both jobs
 over all 96 samples and compare every generated CSV against `baseline.sha256`,
@@ -218,6 +273,11 @@ sequential one and the GUI's parallel one — reproduce it exactly.
   but sort last and are used verbatim as the sample name.
 - The GUI's sequence browser reads the first 5,000 rows of a sample's CSV.
 - Charts show the largest 24 samples, with a note when more exist.
+- The profile and the pattern search both need the sample sheet; the pattern
+  search holds one file's k-mers at a time, so memory follows the largest file
+  rather than the whole set.
+- A sample with no unbinned reads contributes zeros to the profile and is not
+  required to hold a shared pattern.
 
 ## License
 
