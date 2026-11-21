@@ -11,10 +11,12 @@
 //! dependencies. Both `noise_counter` (ratatui) and `noise_gui` (eframe) build
 //! on it, so output is identical whichever front end you use.
 
+pub mod anatomy;
 pub mod count;
 pub mod scan;
 pub mod tables;
 
+pub use anatomy::{anatomise, ReadAnatomy, POLY_G_MIN_RUN};
 pub use count::{
     aggregate_hits, clean_sequence, compute_run_totals, count_file, count_sequence_across,
     count_sequence_across_with, examine_file, examine_file_with, parse_length_filter,

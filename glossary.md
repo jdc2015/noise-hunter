@@ -66,7 +66,9 @@ counts them, looking for the pattern in what failed.
 - **FASTQ** — the per-sample read format `bcl-convertor` writes. This repository
   never reads FASTQ; its input is plain text, one sequence per line.
 - **Read** — one line of a `*_unbinned_reads` file. Nothing else about it is
-  known to this program: no quality scores, no pairing, no coordinates.
+  known to this program: no quality scores, no pairing, no coordinates. A line
+  that is entirely `N` is not a read — sample1 has 1,246 lines and 1,244 reads —
+  which is why counts are quoted against usable reads.
 - **`sampleN_unbinned_results.csv`** — `fastq-binner`'s output for one sample: the
   reads it could not assign. This is the file the pipeline produces.
 - **`*_unbinned_reads`** — this repository's input: the same reads, stored as
@@ -107,9 +109,9 @@ counts them, looking for the pattern in what failed.
   **index2 sits much further downstream, beyond these reads**. **Finding either
   index anywhere in a read is a noise signature** — "anywhere" meaning any
   position, including that usual slot. Measured with index1 in that slot: sample1
-  966 of 1,246 reads, sample2 1,692 of 2,130, sample8 337 of 916. On the
+  966 of 1,244 reads, sample2 1,692 of 2,119, sample8 337 of 914. On the
   anywhere-counts rule most reads in these files are index-positive: 1,129 of
-  sample1's 1,246 contain index1, none contain index2, and 117 contain neither.
+  sample1's 1,244 contain index1, none contain index2, and 115 contain neither.
 - **Index pair / swapped pair** — a sample's two indices together identify it. In
   the sheet, for every `i` the partner sample `97 − i` lists the same two 8-mers
   in the **opposite order** (`sample48`/`sample49`, `sample1`/`sample96`), and all
@@ -127,21 +129,21 @@ counts them, looking for the pattern in what failed.
   this sample set — the same 27-mer in every sample checked (samples 1, 2, 3 and
   40 all lead with it). "Constant" is therefore a fact about this sample set, not
   about all variants. Only a subset of a sample's reads carry it: 888 of sample1's
-  1,246, 286 of sample40's 1,441. That subset is exactly what the worked-example
+  1,244, 286 of sample40's 1,436. That subset is exactly what the worked-example
   search counts, which is why the query and the prefix are the same string.
 - **Read layout** — as measured in this sample set: `[27-base prefix][index1]
   [insert]`, most reads 151 bases long, and — when the molecule ended early — a
   poly-G run filling the rest. In sample1 the prefix starts at base 1, index1 at
-  base 28, and 966 of 1,246 reads place index1 there. Nothing enforces this
+  base 28, and 966 of 1,244 reads place index1 there. Nothing enforces this
   layout; it is an observation about the data.
 - **Poly-G read** — a **short read**: the molecule ended early (say at base 55)
   and the sequencer filled the rest with `G`s to reach the programmed length of
   151. The G-run is padding, not sequence — the read's real content ends where it
   starts, and it can be trimmed or ignored. It is common here: 1,134 of sample1's
-  1,246 reads, 1,998 of sample2's 2,130, 112 of sample96's 116. Nothing in this
+  1,244 reads, 1,998 of sample2's 2,119, 112 of sample96's 115. Nothing in this
   code trims it; the reads are counted as they are.
 - **Background read** — a read that does not begin with the construct prefix
-  (the majority of sample40: 1,155 of 1,441). Where these come from is **not yet
+  (the majority of sample40: 1,150 of 1,436). Where these come from is **not yet
   known**, and they are not assumed to be contamination. Identifying and counting
   them is one of the reasons this program exists: a prefix search counts reads
   without the prefix rather than discarding them.

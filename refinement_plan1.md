@@ -21,11 +21,11 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 |---|---|
 | Read layout | `[27-base barcode][index1][insert]`, poly-G padding when short |
 | Barcode | `CACCAGACACGTCTGAACTCCAGTCAC`, same in every sample checked |
-| index1 slot | base 28 in 966/1,246 sample1 reads, 1,692/2,130 sample2, 337/916 sample8 |
-| index1 anywhere | 1,129/1,246 sample1 reads |
+| index1 slot | base 28 in 966/1,244 sample1 reads, 1,692/2,119 sample2, 337/914 sample8 |
+| index1 anywhere | 1,129/1,244 sample1 reads |
 | index2 | 0/96 files contain their own; it sits beyond these reads |
-| Poly-G | 1,134/1,246 sample1, 1,998/2,130 sample2, 112/116 sample96 |
-| Barcode present | 888/1,246 sample1, 286/1,441 sample40 |
+| Poly-G | 1,134/1,244 sample1, 1,998/2,119 sample2, 112/115 sample96 |
+| Barcode present | 888/1,244 sample1, 286/1,436 sample40 |
 | Sheet | 96 rows, CRLF, every pair listed again reversed for sample `97 − i` |
 
 ## Design decisions
@@ -45,7 +45,7 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 | Phase | Work | Est. | Status |
 |---|---|---|---|
 | 0 | Tables in the repo, parsers, fixtures | 1–2 h | done |
-| 1 | Read anatomy: one function, one struct | 2–3 h | |
+| 1 | Read anatomy: one function, one struct | 2–3 h | done |
 | 2 | Per-sample noise profile + CSV | 2–3 h | |
 | 3 | Index-aware counts (own/other/position) | 2–3 h | |
 | 4 | Barcode check against the probe table | 1–2 h | |
