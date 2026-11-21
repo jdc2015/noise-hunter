@@ -34,10 +34,10 @@ Companion documents: [glossary.md](glossary.md), [refinements.md](refinements.md
 |---|---|
 | D1 | All per-read classification lives in `noise_core` as pure functions over a cleaned sequence. Front ends only render; nothing about noise classes is computed twice. |
 | D2 | **Additive only.** Existing files, names, headers and bytes do not change; the golden guard must keep passing at every phase. New outputs get new names. |
-| D3 | A "pattern" starts as an **exact k-mer** presence/absence across samples (`k` configurable, default 20). Family/within-N-mismatch matching is a later plan, not this one. |
-| D4 | Thresholds are **configuration, not constants**: default "present in all selected samples with ≥ 1 read", because the motivating example is a pattern in every sample. |
+| D3 | A "pattern" starts as an **exact k-mer** presence/absence across the selected samples. `k` is the user's choice (default 20) and deliberately **arbitrary**: it is not tied to the 27-base barcode, and a k-mer may contain part of the barcode, part of an index, or nothing recognisable — what the noise looks like is the open question. Family/within-N-mismatch matching is a later plan, not this one. |
+| D4 | Thresholds are **relative to the selection**, never to the full set: the user may analyse all 96 samples, a subset, or one. Default "present in every selected sample with ≥ 1 read"; `--min-samples` narrows that within the selection. |
 | D5 | Chance is reported, not gated: each shared k-mer gets an expected count under a mononucleotide model per sample, so a G-rich artefact is visible as such. |
-| D6 | Sample sheet and probe table are **runtime data files**, not compiled-in tables: `--sample-sheet` and `--probe-table` flags plus GUI pickers. Copies live under `docs/` so tests and readers can see them. |
+| D6 | Sample sheet and probe table are **runtime data files**, not compiled-in tables: `--sample-sheet` and `--probe-table` flags plus GUI pickers. The sheet is required for index work; the probe table is **optional** — committing one is the user's choice, and phases 3–4 degrade to `n/a` without it. |
 | D7 | Poly-G trimming is **opt-in**. Default counts stay exactly as they are today. |
 
 ## Phase summary
@@ -62,8 +62,9 @@ each other and can be reordered.
 
 **Goal:** the two upstream tables are in the repository and readable by tests.
 
-1. Add `docs/sample_sheet.csv` (the 96-row dual-index sheet) and, when available,
-   `docs/probe_table.csv`. Keep them as supplied; note the CRLF line endings.
+1. Add `docs/sample_sheet.csv` (the 96-row dual-index sheet). `docs/probe_table.csv`
+   is optional and supplied only if the user chooses to commit one; keep either as
+   supplied, and note the CRLF line endings.
 2. New `noise_core/src/tables.rs`: `SampleSheet::parse(&str)` and
    `ProbeTable::parse(&str)`, tolerant of CRLF, rejecting duplicate sample names.
    Structs: `SampleSheet { samples: Vec<SampleIndices> }`,
@@ -145,9 +146,9 @@ read carries index2.
    until the real probe table lands — the columns exist so the shape does not
    change later.
 
-**Acceptance:** with `docs/probe_table.csv` absent, the profile reports `readA`
-counts equal to the barcode-present counts already measured; with a two-variant
-fixture, all four classes are produced correctly.
+**Acceptance:** with `docs/probe_table.csv` absent, the profile still counts the
+single known 27-mer and reports the `readB` columns as `n/a` rather than zero; with
+a two-variant fixture, all four classes are produced correctly.
 
 ## Phase 5 — Poly-G handling
 
@@ -166,25 +167,35 @@ histogram predicts, and a fixture pins the exact number.
 
 ## Phase 6 — Cross-sample pattern search
 
-**Goal:** the motivating example — a sequence pattern present in all samples.
+**Goal:** the motivating example — a sequence pattern present across the selected
+samples, whether that is all 96, a subset, or one.
 
 1. `noise_core/src/patterns.rs`: `shared_kmers(files, k, opts) -> Vec<SharedPattern>`
    where `SharedPattern { kmer, samples_present: usize, total: u64, per_sample: Vec<u64>, expected: f64 }`.
+   `files` is the selection, so "all samples" means all *selected* ones; with a
+   single file selected the result is that file's k-mer list, degenerate but well
+   defined.
 2. Compute per file in parallel (the job runner already does this), intersect by
    k-mer hash, then rank.
 3. `expected` from D5: the k-mer's expected count under each sample's mononucleotide
    frequencies; report `observed/expected`.
-4. Output `noise_results/shared_kmers.csv`, header
-   `kmer,samples_present,total,observed_over_expected` plus one column per sample
-   when `--wide` is asked for (default: long form, one row per k-mer per sample,
-   because 96 columns is unreadable in a terminal).
-5. CLI/GUI surface is phase 8; phase 6 ships the core function and its CSV writer,
+4. Output **`noise_results/shared_kmers/shared_kmers.csv`** — a folder of its own,
+   because this is a cross-sample analysis rather than a per-run count. Header
+   `kmer,samples_present,samples_selected,total,observed_over_expected`, with
+   per-sample counts in long form (one row per k-mer per sample) unless `--wide`
+   asks for one column per sample.
+5. Write `noise_results/shared_kmers/run.txt` beside it: `k`, the threshold, the
+   selected samples in order, and the command line. A ranking is only meaningful
+   against the settings that produced it.
+6. CLI/GUI surface is phase 8; phase 6 ships the core function and its writer,
    exercised by tests.
 
 **Acceptance:** over `counted_results` with `k = 20` and "present in all 96",
 the command completes in under 10 seconds in release and returns a ranked list; a
 fixture with a k-mer planted in every sample ranks it first; a k-mer planted in one
-sample is excluded; the expected-count column is present and non-trivial.
+sample is excluded when the threshold is "all", and included when the selection is
+that one sample; `run.txt` records what was run; the expected-count column is
+present and non-trivial.
 
 ## Phase 7 — Reporting and batch mode
 
@@ -194,17 +205,21 @@ sample is excluded; the expected-count column is present and non-trivial.
    `--profile` flag on the GUI? Prefer a separate binary in `noise_gui`
    (`noise_profile`) so the GUI binary keeps its single responsibility, and the
    TUI is untouched.
-2. Flags: `--folder <path>`, `--sample-sheet <path>`, `--probe-table <path>`,
-   `--k <n>`, `--min-samples <n>`, `--trim-poly-g`, `--out <dir>`.
-3. Writes `noise_profile.csv` and `shared_kmers.csv`; refuses to overwrite without
-   `--force`, matching the GUI's guard.
+2. Flags: `--folder <path>`, `--sample-sheet <path>`, `--probe-table <path>`
+   (optional), `--samples <name,…>` (default: all files in the folder),
+   `--k <n>` (default 20), `--min-samples <n>` (default: all selected),
+   `--trim-poly-g`, `--force`.
+3. Writes `noise_profile.csv` and `shared_kmers/shared_kmers.csv` under the sibling
+   `noise_results/`; refuses to overwrite either without `--force`, matching the
+   GUI's guard.
 4. Performance: stream per file, do not hold all reads; the 96-sample set should
    stay under a few seconds.
 
 **Acceptance:** `cargo run --release -p noise_gui --bin noise_profile -- --folder
-counted_results --sample-sheet docs/sample_sheet.csv` writes both CSVs; running it
-twice without `--force` refuses the second time; `--min-samples 96` reproduces the
-phase 6 answer.
+counted_results --sample-sheet docs/sample_sheet.csv` writes both outputs; running
+it twice without `--force` refuses the second time; `--samples sample1,sample2`
+analyses exactly those two and `run.txt` names them; `--min-samples 96` reproduces
+the phase 6 answer.
 
 ## Phase 8 — UI surfaces
 
@@ -241,7 +256,8 @@ not changed; the layout test is extended to the new tabs.
 | `noisecounts_<sample>.csv` | count job | unchanged, golden-guarded |
 | `sequencecount.csv` | search job | unchanged, golden-guarded |
 | `noise_profile.csv` | profile | new, fixed name, guarded |
-| `shared_kmers.csv` | patterns | new, fixed name, guarded |
+| `shared_kmers/shared_kmers.csv` | patterns | new, own folder, guarded |
+| `shared_kmers/run.txt` | patterns | the settings a ranking was produced under |
 
 ## Risks
 
@@ -254,12 +270,17 @@ not changed; the layout test is extended to the new tabs.
 | Scope creep into re-binning reads | The binner stays out of scope: this program explains rejections, it does not redo assignments |
 | 96 samples are small; real runs are 25M–2000M reads | Profile and patterns stream per file; memory limits stated in the README rather than discovered later |
 
-## Decisions still needed from you
+## Settled decisions
 
-1. **Is `k = 20` the right pattern length**, or should the first version count the
-   27-base barcode and index1 explicitly and leave k-mers for a later pass?
-2. **"All samples" or a majority threshold** as the default definition of shared?
-3. **Does `probe_table.csv` exist in a form we can commit**, or is it generated per
-   run? Phase 4 is thin without it.
-4. **Where should the shared-pattern output live** — `noise_results/` beside the
-   other outputs, or a separate analysis folder, since it is not a per-run count?
+| Question | Answer |
+|---|---|
+| Pattern length | `k` is the user's choice, default 20, and deliberately arbitrary — not tied to the 27-base barcode. A k-mer may contain part of the barcode, part of an index, or nothing recognisable. |
+| Shared threshold | Relative to the selection: all 96 samples, a subset, or one. Default "every selected sample"; `--min-samples` narrows it. |
+| Probe table | Optional. Committing one is the user's decision; phases 3–4 report `n/a` without it. |
+| Pattern output | `noise_results/shared_kmers/`, holding `shared_kmers.csv` and `run.txt`. |
+
+## Left to implementation judgement
+
+- Whether the effective-length histogram is extra rows in `noise_profile.csv`
+  (a `metric` column) or a second file. One file is preferred.
+- Whether `--wide` earns its place; if 96 columns are never useful, drop it.
